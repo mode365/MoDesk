@@ -17,6 +17,11 @@ cert.pfx
 *png
 *svg
 *jpg
+# MoDesk: committed brand assets (exceptions to the blanket image ignores above)
+!flutter/assets/icon.png
+!flutter/assets/logo.png
+!flutter/assets/logo_light.png
+!flutter/assets/logo_dark.png
 sciter.dll
 **pdb
 src/bridge_generated.rs
