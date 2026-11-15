@@ -249,16 +249,16 @@ class MyTheme {
   MyTheme._();
 
   static const Color grayBg = Color(0xFFEFEFF2);
-  static const Color accent = Color(0xFF0071FF);
-  static const Color accent50 = Color(0x770071FF);
-  static const Color accent80 = Color(0xAA0071FF);
+  static const Color accent = Color(0xFFFF9A33);
+  static const Color accent50 = Color(0x77FF9A33);
+  static const Color accent80 = Color(0xAAFF9A33);
   static const Color canvasColor = Color(0xFF212121);
   static const Color border = Color(0xFFCCCCCC);
   static const Color idColor = Color(0xFF00B6F0);
   static const Color darkGray = Color.fromARGB(255, 148, 148, 148);
   static const Color cmIdColor = Color(0xFF21790B);
   static const Color dark = Colors.black87;
-  static const Color button = Color(0xFF2C8CFF);
+  static const Color button = Color(0xFFFF9A33);
   static const Color hoverBorder = Color(0xFF999999);
 
   // ListTile
@@ -1321,7 +1321,7 @@ Color? _msgboxColor(String type) {
   if (type.contains("error") || type == "re-input-password") {
     return Color(0xFFE04F5F);
   }
-  return Color(0xFF2C8CFF);
+  return Color(0xFFFF9A33);
 }
 
 Widget msgboxIcon(String type) {
@@ -2599,6 +2599,60 @@ connectMainDesktop(String id,
 /// If [isViewCamera], starts a session only for view camera.
 /// If [isTcpTunneling], starts a session only for tcp tunneling.
 /// If [isRDP], starts a session only for rdp.
+/// Custom mesh tunnel (tailcat): decide whether the upcoming remote-control
+/// connection should be routed through the custom mesh tunnel.
+///
+/// Master switch  : [kOptionCustomMeshTunnel]  (Y = on, enables the tunnel)
+/// Prompt state   : [kOptionCustomMeshTunnelPrompt]
+///                   ''/ask   -> ask every time
+///                   'always' -> always tunnel (no prompt)
+///                   'never'  -> never tunnel (no prompt)
+/// Popup choices  : 同意(always) / 本次不提醒(skip once) / 以后不提醒(never)
+Future<bool> _meshTunnelShouldUse(BuildContext context) async {
+  final enabled = await bind.mainGetOption(key: kOptionCustomMeshTunnel) == 'Y';
+  if (!enabled) return false;
+  final pref = await bind.mainGetOption(key: kOptionCustomMeshTunnelPrompt);
+  if (pref == 'always') return true;
+  if (pref == 'never') return false;
+  final choice = await showDialog<String>(
+    context: context,
+    barrierDismissible: false,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(translate('custom_mesh_tunnel_prompt_title')),
+      content: Text(translate('custom_mesh_tunnel_prompt_body')),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, 'always'),
+          child: Text(translate('custom_mesh_tunnel_agree')),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, 'skip'),
+          child: Text(translate('custom_mesh_tunnel_skip_once')),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, 'never'),
+          child: Text(translate('custom_mesh_tunnel_disable')),
+        ),
+      ],
+    ),
+  );
+  switch (choice) {
+    case 'always':
+      await bind.mainSetOption(
+          key: kOptionCustomMeshTunnelPrompt, value: 'always');
+      return true;
+    case 'never':
+      await bind.mainSetOption(
+          key: kOptionCustomMeshTunnelPrompt, value: 'never');
+      await bind.mainSetOption(key: kOptionCustomMeshTunnel, value: 'N');
+      return false;
+    case 'skip':
+    default:
+      // 本次不提醒：本次不隧道，偏好保持 ask，下次连接仍会询问
+      return false;
+  }
+}
+
 connect(BuildContext context, String id,
     {bool isFileTransfer = false,
     bool isViewCamera = false,
@@ -2629,6 +2683,21 @@ connect(BuildContext context, String id,
   forceRelay = id != oldId || forceRelay;
   assert(!(isFileTransfer && isTcpTunneling && isRDP),
       "more than one connect type");
+
+  // Custom mesh tunnel (tailcat): only remote-control connections may use the
+  // tunnel; file transfer / terminal / camera / TCP tunneling / RDP stay direct.
+  final isTunnelOnly =
+      !isFileTransfer && !isViewCamera && !isTerminal && !isTcpTunneling && !isRDP;
+  if (isTunnelOnly) {
+    final useTunnel = await _meshTunnelShouldUse(context);
+    // TODO(tailcat): when `useTunnel` is true, route the remote-control control
+    // channel through the bundled tailcat binary's local endpoint (non-control
+    // and media flows stay direct to the server). Requires the tailcat binary
+    // and its interface contract.
+    if (useTunnel) {
+      // transport seam: tailcat binary integration lands here
+    }
+  }
 
   if (isDesktop) {
     if (desktopType == DesktopType.main) {

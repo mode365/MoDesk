@@ -1824,9 +1824,25 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
         block: locked,
         child: Column(children: [
           network(context),
+          _meshTunnelTile(context),
         ]),
       ),
     ]).marginOnly(bottom: _kListViewBottomMargin);
+  }
+
+  Widget _meshTunnelTile(BuildContext context) {
+    final enabled =
+        bind.mainGetOptionSync(key: kOptionCustomMeshTunnel) == 'Y';
+    return SwitchListTile(
+      value: enabled,
+      title: Text(translate('custom_mesh_tunnel')),
+      subtitle: Text(translate('custom_mesh_tunnel_desc')),
+      onChanged: (v) async {
+        await bind.mainSetOption(
+            key: kOptionCustomMeshTunnel, value: v ? 'Y' : 'N');
+        setState(() {});
+      },
+    );
   }
 
   Widget network(BuildContext context) {
@@ -2632,7 +2648,7 @@ class _AboutState extends State<_About> {
                     style: linkStyle,
                   ).marginSymmetric(vertical: 4.0)),
               Container(
-                decoration: const BoxDecoration(color: Color(0xFF2c8cff)),
+                decoration: const BoxDecoration(color: Color(0xFFff9a33)),
                 padding:
                     const EdgeInsets.symmetric(vertical: 24, horizontal: 8),
                 child: SelectionArea(

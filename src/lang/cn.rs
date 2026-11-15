@@ -826,5 +826,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("install-directory-not-empty-tip", "所选文件夹不为空。安装可能删除现有数据。建议选择其他文件夹。"),
         ("Request approval", "请求批准"),
         ("Forever", "永久"),
+        ("custom_mesh_tunnel", "自定义 MESH 隧道"),
+        ("custom_mesh_tunnel_desc", "远程控制连接时经自定义 Mesh 隧道（tailcat）转发；文件、终端、媒体等仍直连服务器"),
+        ("custom_mesh_tunnel_prompt_title", "使用自定义 MESH 隧道？"),
+        ("custom_mesh_tunnel_prompt_body", "是否将本次远程控制连接通过自定义 MESH 隧道（tailcat）转发？"),
+        ("custom_mesh_tunnel_agree", "同意"),
+        ("custom_mesh_tunnel_skip_once", "本次不提醒"),
+        ("custom_mesh_tunnel_disable", "以后不提醒"),
     ].iter().cloned().collect();
 }

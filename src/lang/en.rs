@@ -292,5 +292,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("api_server_empty_tip", "With API Server empty, your custom server defaults to HTTP. Contact your administrator to enable HTTPS."),
         ("android-logs-folder-tip", "Choose Android → media to store log files."),
         ("install-directory-not-empty-tip", "The selected folder is not empty. Installation may delete existing data. Consider choosing a different folder."),
+        ("custom_mesh_tunnel", "Custom Mesh Tunnel"),
+        ("custom_mesh_tunnel_desc", "Route remote-control connections through the custom Mesh tunnel (tailcat); file, terminal, media and other flows stay direct to the server"),
+        ("custom_mesh_tunnel_prompt_title", "Use custom Mesh tunnel?"),
+        ("custom_mesh_tunnel_prompt_body", "Route this remote-control connection through the custom Mesh tunnel (tailcat)?"),
+        ("custom_mesh_tunnel_agree", "Agree"),
+        ("custom_mesh_tunnel_skip_once", "Don't remind this time"),
+        ("custom_mesh_tunnel_disable", "Don't remind again"),
     ].iter().cloned().collect();
 }

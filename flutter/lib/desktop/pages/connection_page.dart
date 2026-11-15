@@ -80,9 +80,12 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
 
     setupServerWidget() => Flexible(
           child: Offstage(
-            offstage: !(!_svcStopped.value &&
-                stateGlobal.svcStatus.value == SvcStatus.ready &&
-                _svcIsUsingPublicServer.value),
+            // MoDesk: custom client always ships with a self-hosted server;
+            // never show the "setup your own server" tip.
+            offstage: isCustomClient ||
+                !(!_svcStopped.value &&
+                    stateGlobal.svcStatus.value == SvcStatus.ready &&
+                    _svcIsUsingPublicServer.value),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [

@@ -200,6 +200,10 @@ const String kOptionAllowInsecureTLSFallback = "allow-insecure-tls-fallback";
 const String kOptionDisableUdp = "disable-udp";
 const String kOptionEnableFlutterHttpOnRust = "enable-flutter-http-on-rust";
 
+// custom mesh tunnel (tailcat) options
+const String kOptionCustomMeshTunnel = "custom-mesh-tunnel";
+const String kOptionCustomMeshTunnelPrompt = "custom-mesh-tunnel-prompt";
+
 // builtin options
 const String kOptionHideServerSetting = "hide-server-settings";
 const String kOptionHideProxySetting = "hide-proxy-settings";

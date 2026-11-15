@@ -821,6 +821,17 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                       });
                     },
             ),
+          if (!disabledSettings && !_hideNetwork)
+            SettingsTile.switchTile(
+              title: Text(translate('custom_mesh_tunnel')),
+              initialValue:
+                  bind.mainGetOptionSync(key: kOptionCustomMeshTunnel) == 'Y',
+              onToggle: (v) async {
+                await bind.mainSetOption(
+                    key: kOptionCustomMeshTunnel, value: v ? 'Y' : 'N');
+                setState(() {});
+              },
+            ),
           if (isAndroid && !outgoingOnly && !_isUsingPublicServer)
             SettingsTile.switchTile(
               title: Text(translate('Disable UDP')),
