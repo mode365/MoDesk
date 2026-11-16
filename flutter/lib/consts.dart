@@ -203,6 +203,7 @@ const String kOptionEnableFlutterHttpOnRust = "enable-flutter-http-on-rust";
 // custom mesh tunnel (tailcat) options
 const String kOptionCustomMeshTunnel = "custom-mesh-tunnel";
 const String kOptionCustomMeshTunnelPrompt = "custom-mesh-tunnel-prompt";
+const String kOptionMeshTunnelPending = "mesh-tunnel-pending";
 
 // builtin options
 const String kOptionHideServerSetting = "hide-server-settings";

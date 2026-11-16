@@ -711,6 +711,15 @@ impl InvokeUiSession for FlutterHandler {
         self.push_event("permission", &[(name, &value.to_string())], &[]);
     }
 
+    fn confirm_mesh_tunnel_fallback(&self, id: i64, reason: &str) -> bool {
+        self.push_event(
+            "mesh_tunnel_fallback",
+            &[("id", &id.to_string()), ("reason", &reason.to_string())],
+            &[],
+        );
+        true
+    }
+
     // unused in flutter
     fn close_success(&self) {}
 

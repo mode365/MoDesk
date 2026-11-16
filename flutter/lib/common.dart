@@ -2599,57 +2599,100 @@ connectMainDesktop(String id,
 /// If [isViewCamera], starts a session only for view camera.
 /// If [isTcpTunneling], starts a session only for tcp tunneling.
 /// If [isRDP], starts a session only for rdp.
-/// Custom mesh tunnel (tailcat): decide whether the upcoming remote-control
-/// connection should be routed through the custom mesh tunnel.
+/// Custom mesh tunnel (tailcat): choose the transport for the upcoming
+/// remote-control connection.
 ///
-/// Master switch  : [kOptionCustomMeshTunnel]  (Y = on, enables the tunnel)
-/// Prompt state   : [kOptionCustomMeshTunnelPrompt]
-///                   ''/ask   -> ask every time
-///                   'always' -> always tunnel (no prompt)
-///                   'never'  -> never tunnel (no prompt)
-/// Popup choices  : 同意(always) / 本次不提醒(skip once) / 以后不提醒(never)
-Future<bool> _meshTunnelShouldUse(BuildContext context) async {
-  final enabled = await bind.mainGetOption(key: kOptionCustomMeshTunnel) == 'Y';
+/// Master switch  : [kOptionCustomMeshTunnel] (default ON, "N" opts out).
+///                  Off means plain classic connection, never a dialog,
+///                  never the tunnel.
+/// Default pref   : [kOptionCustomMeshTunnelPrompt]
+///                   'encrypt' -> encrypt by default, no dialog (the only
+///                                remembered state; "direct + remember" turns
+///                                the switch off instead; legacy values and
+///                                empty count as ask)
+/// Pending choice : [kOptionMeshTunnelPending] written on every connect;
+///                  kept in-process on the Rust side (see flutter_ffi.rs),
+///                  reused by reconnects, immune to option sync.
+///
+/// Dialog choices : [Cancel] / [Direct] / [Encrypt] plus a "don't ask again"
+///                  checkbox that persists the choice as the default.
+///                  "Direct + remember" turns the master switch off.
+Future<bool?> _meshTunnelChooseMode(BuildContext context) async {
+  final enabled =
+      await bind.mainGetOption(key: kOptionCustomMeshTunnel) != 'N';
   if (!enabled) return false;
   final pref = await bind.mainGetOption(key: kOptionCustomMeshTunnelPrompt);
-  if (pref == 'always') return true;
-  if (pref == 'never') return false;
+  if (pref == 'encrypt') return true;
+  var remember = false;
   final choice = await showDialog<String>(
     context: context,
     barrierDismissible: false,
-    builder: (dialogContext) => AlertDialog(
-      title: Text(translate('custom_mesh_tunnel_prompt_title')),
-      content: Text(translate('custom_mesh_tunnel_prompt_body')),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(dialogContext, 'always'),
-          child: Text(translate('custom_mesh_tunnel_agree')),
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (dialogContext, setState) => AlertDialog(
+        title: Text(translate('custom_mesh_tunnel_choose_title')),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(translate('custom_mesh_tunnel_choose_body')),
+            SizedBox(height: 12),
+            Row(
+              children: [
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: Checkbox(
+                    value: remember,
+                    onChanged: (v) => setState(() => remember = v ?? false),
+                  ),
+                ),
+                SizedBox(width: 8),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => setState(() => remember = !remember),
+                    child: Text(translate('custom_mesh_tunnel_remember')),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
-        TextButton(
-          onPressed: () => Navigator.pop(dialogContext, 'skip'),
-          child: Text(translate('custom_mesh_tunnel_skip_once')),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(dialogContext, 'never'),
-          child: Text(translate('custom_mesh_tunnel_disable')),
-        ),
-      ],
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, 'cancel'),
+            child: Text(translate('Cancel')),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, 'direct'),
+            child: Text(translate('custom_mesh_tunnel_direct')),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, 'encrypt'),
+            child: Text(translate('custom_mesh_tunnel_encrypt')),
+          ),
+        ],
+      ),
     ),
   );
   switch (choice) {
-    case 'always':
-      await bind.mainSetOption(
-          key: kOptionCustomMeshTunnelPrompt, value: 'always');
+    case 'encrypt':
+      if (remember) {
+        await bind.mainSetOption(
+            key: kOptionCustomMeshTunnelPrompt, value: 'encrypt');
+      }
       return true;
-    case 'never':
-      await bind.mainSetOption(
-          key: kOptionCustomMeshTunnelPrompt, value: 'never');
-      await bind.mainSetOption(key: kOptionCustomMeshTunnel, value: 'N');
+    case 'direct':
+      if (remember) {
+        // "Direct + don't ask again" means the tunnel feature is opted out:
+        // turn the master switch off, so re-enabling the switch resumes
+        // asking. Without this the switch stays on while a stale preference
+        // silently forces direct for every later connection.
+        await bind.mainSetOption(key: kOptionCustomMeshTunnel, value: 'N');
+        await bind.mainSetOption(key: kOptionCustomMeshTunnelPrompt, value: '');
+      }
       return false;
-    case 'skip':
     default:
-      // 本次不提醒：本次不隧道，偏好保持 ask，下次连接仍会询问
-      return false;
+      return null; // cancelled, abort the connection
   }
 }
 
@@ -2689,14 +2732,13 @@ connect(BuildContext context, String id,
   final isTunnelOnly =
       !isFileTransfer && !isViewCamera && !isTerminal && !isTcpTunneling && !isRDP;
   if (isTunnelOnly) {
-    final useTunnel = await _meshTunnelShouldUse(context);
-    // TODO(tailcat): when `useTunnel` is true, route the remote-control control
-    // channel through the bundled tailcat binary's local endpoint (non-control
-    // and media flows stay direct to the server). Requires the tailcat binary
-    // and its interface contract.
-    if (useTunnel) {
-      // transport seam: tailcat binary integration lands here
-    }
+    final tunnelMode = await _meshTunnelChooseMode(context);
+    if (tunnelMode == null) return; // user cancelled the connection
+    // Hand the decision to the Rust side for this connection; reconnects
+    // reuse it. The Rust side combines this with the master switch and the
+    // remembered default (see tailcat::should_use_tunnel).
+    await bind.mainSetOption(
+        key: kOptionMeshTunnelPending, value: tunnelMode ? 'Y' : 'N');
   }
 
   if (isDesktop) {

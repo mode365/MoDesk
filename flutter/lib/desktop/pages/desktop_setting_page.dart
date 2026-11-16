@@ -1822,27 +1822,9 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
       }),
       preventMouseKeyBuilder(
         block: locked,
-        child: Column(children: [
-          network(context),
-          _meshTunnelTile(context),
-        ]),
+        child: network(context),
       ),
     ]).marginOnly(bottom: _kListViewBottomMargin);
-  }
-
-  Widget _meshTunnelTile(BuildContext context) {
-    final enabled =
-        bind.mainGetOptionSync(key: kOptionCustomMeshTunnel) == 'Y';
-    return SwitchListTile(
-      value: enabled,
-      title: Text(translate('custom_mesh_tunnel')),
-      subtitle: Text(translate('custom_mesh_tunnel_desc')),
-      onChanged: (v) async {
-        await bind.mainSetOption(
-            key: kOptionCustomMeshTunnel, value: v ? 'Y' : 'N');
-        setState(() {});
-      },
-    );
   }
 
   Widget network(BuildContext context) {
@@ -1853,9 +1835,8 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
     final hideWebSocket = isWeb ||
         bind.mainGetBuildinOption(key: kOptionHideWebSocketSetting) == 'Y';
 
-    if (hideServer && hideProxy && hideWebSocket) {
-      return Offstage();
-    }
+    // The card never hides entirely: the MoDesk mesh-tunnel toggle below is
+    // always offered, even when server/proxy/websocket are hidden by policy.
 
     // Helper function to create network setting ListTiles
     Widget listTile({
@@ -1961,6 +1942,31 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
                     'Use WebSocket',
                     '${translate('websocket_tip')}\n\n${translate('server-oss-not-support-tip')}',
                     kOptionAllowWebSocket),
+              if (!hideServer || !hideProxy || !hideWebSocket) divider,
+              // MoDesk custom mesh tunnel: a plain Y/N option (option2bool
+              // would read empty as on), so a custom Switch like the
+              // Disable UDP item below. The description rides a tooltip.
+              listTile(
+                icon: Icons.vpn_lock_outlined,
+                title: 'custom_mesh_tunnel',
+                showTooltip: true,
+                tooltipMessage: 'custom_mesh_tunnel_desc',
+                trailing: Switch(
+                  // Default on: the tunnel feature ships enabled; "N" is the
+                  // explicit opt-out (switch itself, or "Direct + don't ask
+                  // again" in the connect dialog).
+                  value: bind.mainGetOptionSync(key: kOptionCustomMeshTunnel) !=
+                      'N',
+                  onChanged: locked || isOptionFixed(kOptionCustomMeshTunnel)
+                      ? null
+                      : (value) async {
+                          await bind.mainSetOption(
+                              key: kOptionCustomMeshTunnel,
+                              value: value ? 'Y' : 'N');
+                          setState(() {});
+                        },
+                ),
+              ),
               if (!isWeb)
                 futureBuilder(
                   future: bind.mainIsUsingPublicServer(),

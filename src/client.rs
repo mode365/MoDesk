@@ -370,6 +370,11 @@ fn tcp_punch_allowed() -> bool {
 impl Client {
     const CLIENT_CLIPBOARD_NAME: &'static str = "client-clipboard";
 
+    /// Marker for a mesh-tunnel fallback "Retry": the punch must be re-run
+    /// (bounded) so a just-enabled peer tunnel can be picked up. Matched in
+    /// `_start`'s single-future tunnel path.
+    const MESH_TUNNEL_RETRY_MARKER: &'static str = "mesh_tunnel_retry_requested";
+
     /// Start a new connection.
     pub async fn start(
         peer: &str,
@@ -493,6 +498,99 @@ impl Client {
         // be used, so probing v6 reachability is wasted work on every such connection.
         if crate::get_ipv6_punch_enabled() && !interface.is_force_relay() {
             crate::test_ipv6().await;
+        }
+
+        // MoDeix encrypted mesh tunnel: single-future serial path. When the
+        // user chose the mesh tunnel for this session, do NOT race a classic
+        // fallback alongside it. Two concurrent futures would both reach the
+        // fallback confirmation (double dialogs) and, worse, a silent classic
+        // fallback could win the race and connect right after a user Cancel.
+        // So run only the tunnel future: it returns a tunnel on success, falls
+        // back to classic inside connect() after a "Direct" answer, bails on
+        // "Cancel", and a "Retry" answer here triggers a bounded re-punch.
+        if crate::tailcat::should_use_tunnel() {
+            const MAX_MESH_PUNCH_ATTEMPTS: i32 = 3;
+            let mut attempt = 0i32;
+            loop {
+                attempt += 1;
+                let (stop_udp_tx, stop_udp_rx) = oneshot::channel::<()>();
+                let udp =
+                    if crate::get_udp_punch_enabled() && !interface.is_force_relay() {
+                        if let Ok((socket, addr)) =
+                            new_direct_udp_for_unverified(&rendezvous_server).await
+                        {
+                            let udp_port = Arc::new(Mutex::new(0));
+                            let up_cloned = udp_port.clone();
+                            let socket_cloned = socket.clone();
+                            let func = async move {
+                                allow_err!(
+                                    test_udp_uat(socket_cloned, addr, up_cloned, stop_udp_rx)
+                                        .await
+                                );
+                            };
+                            tokio::spawn(func);
+                            (Some(socket), Some(udp_port))
+                        } else {
+                            (None, None)
+                        }
+                    } else {
+                        (None, None)
+                    };
+                let ipv6 =
+                    if crate::get_ipv6_punch_enabled() && !interface.is_force_relay() {
+                        crate::get_ipv6_socket().await
+                    } else {
+                        None
+                    };
+                let webrtc_offerer =
+                    if Self::should_create_webrtc_offerer(&interface) {
+                        match WebRTCStream::new(
+                            "",
+                            interface.is_policy_relay(),
+                            CONNECT_TIMEOUT,
+                        )
+                        .await
+                        {
+                            Ok(stream) => Some(stream),
+                            Err(err) => {
+                                log::warn!("webrtc offerer setup failed: {}", err);
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                let fut = Self::_start_inner(
+                    peer.to_owned(),
+                    key.to_owned(),
+                    token.to_owned(),
+                    conn_type,
+                    interface.clone(),
+                    udp,
+                    Some(stop_udp_tx),
+                    ipv6,
+                    webrtc_offerer,
+                    rendezvous_server.clone(),
+                    servers.clone(),
+                    contained,
+                );
+                match fut.await {
+                    Ok(conn) => return Ok(conn),
+                    Err(e) => {
+                        if e.to_string().contains(Self::MESH_TUNNEL_RETRY_MARKER)
+                            && attempt < MAX_MESH_PUNCH_ATTEMPTS
+                        {
+                            log::info!(
+                                "mesh tunnel retry requested, re-punch attempt {}/{}",
+                                attempt + 1,
+                                MAX_MESH_PUNCH_ATTEMPTS
+                            );
+                            continue;
+                        }
+                        return Err(e);
+                    }
+                }
+            }
         }
 
         let (stop_udp_tx, stop_udp_rx) = oneshot::channel::<()>();
@@ -851,6 +949,11 @@ impl Client {
         let my_nat_type = crate::get_nat_type(100).await;
         let mut is_local = false;
         let mut feedback = 0;
+        // MoDesk mesh tunnel advertised by the peer (carried through the
+        // rendezvous server's punch response). Empty when the peer or the
+        // server does not provide one.
+        let mut tailcat_addr = String::new();
+        let mut tailcat_port: i32 = 0;
         use hbb_common::protobuf::Enum;
         let nat_type = if interface.is_force_relay() {
             NatType::SYMMETRIC
@@ -1029,6 +1132,8 @@ impl Client {
                             peer_addr = AddrMangle::decode(&ph.socket_addr);
                             feedback = ph.feedback;
                             webrtc_sdp_answer = ph.webrtc_sdp_answer;
+                            tailcat_addr = ph.tailcat_addr;
+                            tailcat_port = ph.tailcat_port;
                             let s = udp.0.take();
                             if udp_nat_port > 0 && ph.is_udp && s.is_some() {
                                 if let Some(s) = s {
@@ -1057,6 +1162,128 @@ impl Client {
                             rr.relay_server
                         );
                         start = Instant::now();
+                        // MoDesk mesh tunnel: the peer asked for a relay instead
+                        // of answering the punch. Its RelayResponse carries the
+                        // tailcat advertisement here too (the rendezvous server
+                        // forwards it), so the tunnel still works through
+                        // tailcat's DERP relays. Try it first when the user chose
+                        // the encrypted transport; only when it fails — or the
+                        // peer really has no tunnel — confirm the fallback to the
+                        // classic transports. Ask, never silently revert.
+                        if conn_type == ConnType::DEFAULT_CONN
+                            && crate::tailcat::should_use_tunnel()
+                        {
+                            if !rr.tailcat_addr.is_empty()
+                                && rr.tailcat_port > 0
+                                && !rr.pk().is_empty()
+                            {
+                                signed_id_pk = rr.pk().into();
+                                let tc_addr = rr.tailcat_addr.clone();
+                                let tc_port = rr.tailcat_port;
+                                log::info!(
+                                    "mesh tunnel: relay response advertises tunnel {}:{}",
+                                    tc_addr,
+                                    tc_port
+                                );
+                                // In-place retry loop (same policy as the
+                                // punch-path tunnel block in connect()):
+                                // Retry re-attempts forward+connect+handshake,
+                                // Cancel ends the session, Direct proceeds with
+                                // the relay race below.
+                                loop {
+                                    let mut tun_pk = None;
+                                    if let Some(local_port) =
+                                        crate::tailcat::ensure_tunnel_forward(
+                                            &tc_addr,
+                                            tc_port as u16,
+                                        )
+                                    {
+                                        let tun_target =
+                                            SocketAddr::from(([127, 0, 0, 1], local_port));
+                                        match connect_tcp(tun_target, CONNECT_TIMEOUT).await {
+                                            Ok(mut conn) => {
+                                                match Self::secure_connection(
+                                                    &peer,
+                                                    signed_id_pk.clone(),
+                                                    &key,
+                                                    &mut conn,
+                                                )
+                                                .await
+                                                {
+                                                    // secure_connection() also returns Ok when the peer never
+                                                    // answers the identity handshake — it degrades the stream
+                                                    // to non-secure by design. The user explicitly chose the
+                                                    // encrypted transport, so an unsecured tunnel counts as a
+                                                    // failure here and goes to the fallback dialog instead of
+                                                    // silently degrading (which would only resurface as the
+                                                    // generic "insecure connection" prompt after login).
+                                                    Ok(pk) if conn.is_secured() => {
+                                                        tun_pk = Some((conn, pk))
+                                                    }
+                                                    Ok(_) => log::warn!(
+                                                        "tunnel handshake left the stream unsecured (no SignedId from peer)"
+                                                    ),
+                                                    Err(e) => {
+                                                        log::warn!(
+                                                            "tunnel secure handshake failed ({})",
+                                                            e
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::warn!(
+                                                    "tunnel local connect failed ({})",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        log::warn!("tailcat forward unavailable");
+                                    }
+                                    if let Some((conn, pk)) = tun_pk {
+                                        log::info!(
+                                            "{:?} used to establish Tunnel connection (relay path)",
+                                            start.elapsed()
+                                        );
+                                        return Ok((
+                                            (conn, false, pk, None, "Tunnel"),
+                                            (feedback, rendezvous_server),
+                                            false,
+                                        ));
+                                    }
+                                    match interface
+                                        .confirm_mesh_tunnel_fallback("tunnel-failed")
+                                        .await
+                                    {
+                                        crate::tailcat::FallbackDecision::Direct => break,
+                                        crate::tailcat::FallbackDecision::Cancel => {
+                                            bail!("Cancelled: the mesh tunnel is unavailable");
+                                        }
+                                        crate::tailcat::FallbackDecision::Retry => {
+                                            log::info!(
+                                                "mesh tunnel retry requested, re-attempting"
+                                            );
+                                        }
+                                    }
+                                }
+                            } else {
+                                match interface
+                                    .confirm_mesh_tunnel_fallback("peer-no-tunnel")
+                                    .await
+                                {
+                                    crate::tailcat::FallbackDecision::Direct => {}
+                                    crate::tailcat::FallbackDecision::Cancel => {
+                                        bail!(
+                                            "Cancelled: the peer does not provide the mesh tunnel"
+                                        );
+                                    }
+                                    crate::tailcat::FallbackDecision::Retry => {
+                                        bail!("{}", Self::MESH_TUNNEL_RETRY_MARKER);
+                                    }
+                                }
+                            }
+                        }
                         let mut connect_futures = Vec::new();
                         if let Some(s) = ipv6.0 {
                             let addr = AddrMangle::decode(&rr.socket_addr_v6);
@@ -1366,6 +1593,43 @@ impl Client {
                 format!("nat_type: {:?}", peer_nat_type)
             }
         );
+        // MoDesk mesh tunnel: only remote control rides the tunnel (file
+        // transfer / terminal / camera / RDP stay on the classic transports,
+        // matching the Flutter-side prompt scope), and only when the user
+        // opted in. LAN is NOT excluded: the user explicitly chose encrypted
+        // for this connection, so the tunnel is attempted even locally and a
+        // missing peer tunnel still gets a fallback confirmation.
+        let mut tunnel_addr = None;
+        if conn_type == ConnType::DEFAULT_CONN && crate::tailcat::should_use_tunnel() {
+            log::info!(
+                "mesh tunnel: chosen for this session; peer advertisement: addr='{}', port={}",
+                tailcat_addr,
+                tailcat_port
+            );
+            if !tailcat_addr.is_empty() && tailcat_port > 0 {
+                tunnel_addr = Some((tailcat_addr, tailcat_port));
+            } else {
+// The user asked for the tunnel but the peer did not advertise
+                    // one. Ask: Direct continues classic, Cancel ends the session,
+                    // Retry re-punches the whole path.
+                    match interface
+                        .confirm_mesh_tunnel_fallback("peer-no-tunnel")
+                        .await
+                    {
+                        crate::tailcat::FallbackDecision::Direct => {
+                            log::info!(
+                                "mesh tunnel fallback confirmed (peer has none), classic path"
+                            );
+                        }
+                        crate::tailcat::FallbackDecision::Cancel => {
+                            bail!("Cancelled: the peer does not provide the mesh tunnel");
+                        }
+                        crate::tailcat::FallbackDecision::Retry => {
+                            bail!("{}", Self::MESH_TUNNEL_RETRY_MARKER);
+                        }
+                    }
+            }
+        }
         Ok((
             Self::connect(
                 my_addr,
@@ -1388,6 +1652,7 @@ impl Client {
                 webrtc_bridge_stop,
                 allow_tcp_punch,
                 &punch_type,
+                tunnel_addr,
             )
             .await?,
             (feedback, rendezvous_server),
@@ -1417,13 +1682,8 @@ impl Client {
         webrtc_bridge_stop: Option<oneshot::Sender<()>>,
         allow_tcp_punch: bool,
         punch_type: &str,
-    ) -> ResultType<(
-        Stream,
-        bool,
-        Option<Vec<u8>>,
-        Option<KcpStream>,
-        &'static str,
-    )> {
+        tunnel_addr: Option<(String, i32)>,
+    ) -> ResultType<(Stream, bool, Option<Vec<u8>>, Option<KcpStream>, &'static str)> {
         // Guard the offerer for the whole of connect(): any early return — cancellation during the
         // awaits below, the relay override, or a secure_connection failure — closes its pc via the
         // guard's drop. Disarmed only once WebRTC is the confirmed winning, secured transport.
@@ -1462,6 +1722,82 @@ impl Client {
         }
         log::info!("peer address: {}, timeout: {}", peer, connect_timeout);
         let start = std::time::Instant::now();
+
+        // MoDesk custom mesh tunnel: when the peer advertised a tailcat address
+        // and the user opted in, try the WireGuard tunnel first — the whole
+        // remote-control session (control signalling and media) rides it, hiding
+        // the RustDesk traffic pattern. Any failure falls through to the normal
+        // transport race below — after asking the user — so a peer without a
+        // tunnel (or with a dead one) still connects the classic way.
+        // Try the tunnel; on failure ask the user. Direct falls through to the
+        // classic transports, Retry re-attempts the tunnel (the peer's serve
+        // tunnel may just have come up, or a transient forward/connect/handshake
+        // error may clear), Cancel ends the session.
+        if let Some((tc_addr, tc_port)) = tunnel_addr {
+            loop {
+                let mut linked = None;
+                if let Some(local_port) =
+                    crate::tailcat::ensure_tunnel_forward(&tc_addr, tc_port as u16)
+                {
+                    let tun_target = SocketAddr::from(([127, 0, 0, 1], local_port));
+                        match connect_tcp(tun_target, CONNECT_TIMEOUT).await {
+                            Ok(mut conn) => {
+                                match Self::secure_connection(
+                                    peer_id,
+                                    signed_id_pk.clone(),
+                                    key,
+                                    &mut conn,
+                                )
+                                .await
+                                {
+                                    // Same policy as the relay-path tunnel block: the user
+                                    // chose the encrypted transport, so a stream that stayed
+                                    // unsecured (peer sent no SignedId) is a handshake
+                                    // failure, not a silent downgrade.
+                                    Ok(pk) if conn.is_secured() => linked = Some((conn, pk)),
+                                    Ok(_) => log::warn!(
+                                        "tunnel handshake left the stream unsecured (no SignedId from peer)"
+                                    ),
+                                    Err(e) => {
+                                        log::warn!("tunnel secure handshake failed ({})", e);
+                                    }
+                                }
+                            }
+                        Err(e) => {
+                            log::warn!("tunnel local connect failed ({})", e);
+                        }
+                    }
+                } else {
+                    log::warn!("tailcat forward unavailable");
+                }
+                if let Some((conn, pk)) = linked {
+                    log::info!(
+                        "{:?} used to establish Tunnel connection with {} punch",
+                        start.elapsed(),
+                        punch_type
+                    );
+                    if let Some(stop) = webrtc_bridge_stop {
+                        let _ = stop.send(());
+                    }
+                    // The direct flag stays false: tailcat may ride DERP
+                    // relaying and the local side cannot tell.
+                    return Ok((conn, false, pk, None, "Tunnel"));
+                }
+                // The tunnel is unavailable: ask before falling back.
+                match interface.confirm_mesh_tunnel_fallback("tunnel-failed").await {
+                    crate::tailcat::FallbackDecision::Direct => {
+                        log::info!("mesh tunnel fallback confirmed, trying normal transports");
+                        break;
+                    }
+                    crate::tailcat::FallbackDecision::Cancel => {
+                        bail!("Cancelled: the mesh tunnel is unavailable");
+                    }
+                    crate::tailcat::FallbackDecision::Retry => {
+                        log::info!("mesh tunnel retry requested, re-attempting");
+                    }
+                }
+            }
+        }
 
         // Each attempt carries whether its path is direct (4th field). TCP/UDP/IPv6 punch are
         // always direct; WebRTC is direct only when ICE nominated a non-TURN pair.
@@ -4927,7 +5263,7 @@ async fn send_switch_login_request(
 
 /// Interface for client to send data and commands.
 #[async_trait]
-pub trait Interface: Send + Clone + 'static + Sized {
+pub trait Interface: Send + Sync + Clone + 'static + Sized {
     /// Send message data to remote peer.
     fn send(&self, data: Data);
     fn msgbox(&self, msgtype: &str, title: &str, text: &str, link: &str);
@@ -4954,6 +5290,19 @@ pub trait Interface: Send + Clone + 'static + Sized {
         peer: &mut Stream,
     );
     async fn handle_test_delay(&self, t: TestDelay, peer: &mut Stream);
+
+    /// Ask the user how to proceed when the requested mesh tunnel is
+    /// unavailable: Direct uses the classic transports, Cancel ends the
+    /// session, Retry re-attempts the tunnel. The default Direct just
+    /// proceeds, for non-interactive callers; the Flutter session overrides
+    /// it with a dialog. Hand-written boxed future (not #[async_trait]) so
+    /// generic `impl Interface` callers need no macro-generated bounds.
+    fn confirm_mesh_tunnel_fallback<'a>(
+        &'a self,
+        _reason: &'a str,
+    ) -> hbb_common::futures::future::BoxFuture<'a, crate::tailcat::FallbackDecision> {
+        Box::pin(async { crate::tailcat::FallbackDecision::Direct })
+    }
 
     fn get_lch(&self) -> Arc<RwLock<LoginConfigHandler>>;
 

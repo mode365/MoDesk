@@ -1308,6 +1308,20 @@ fn get_api_server_(api: String, custom: String) -> String {
             return format!("http://{}", s);
         }
     }
+    // MoDesk: no custom rendezvous server configured, so fall back to the
+    // built-in self-hosted server's API (http://<host>:21114) instead of the
+    // official admin server. Keeps login/OAuth and heartbeats on our own
+    // deployment; the official API would show google/github login and a key
+    // that does not match the self-hosted rendezvous server.
+    if let Some(host) = config::RENDEZVOUS_SERVERS.first() {
+        let host = host.trim();
+        let host = if hbb_common::is_ipv6_str(host) && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
+        return format!("http://{}:{}", host, config::RENDEZVOUS_PORT - 2);
+    }
     "https://admin.rustdesk.com".to_owned()
 }
 

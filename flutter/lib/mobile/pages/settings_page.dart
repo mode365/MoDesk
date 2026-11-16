@@ -824,8 +824,9 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
           if (!disabledSettings && !_hideNetwork)
             SettingsTile.switchTile(
               title: Text(translate('custom_mesh_tunnel')),
+              // Default on; "N" is the explicit opt-out.
               initialValue:
-                  bind.mainGetOptionSync(key: kOptionCustomMeshTunnel) == 'Y',
+                  bind.mainGetOptionSync(key: kOptionCustomMeshTunnel) != 'N',
               onToggle: (v) async {
                 await bind.mainSetOption(
                     key: kOptionCustomMeshTunnel, value: v ? 'Y' : 'N');

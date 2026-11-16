@@ -335,6 +335,8 @@ class FfiModel with ChangeNotifier {
         handleMsgBox(evt, sessionId, peerId);
       } else if (name == 'toast') {
         handleToast(evt, sessionId, peerId);
+      } else if (name == 'mesh_tunnel_fallback') {
+        await handleMeshTunnelFallback(evt, sessionId, peerId);
       } else if (name == 'set_multiple_windows_session') {
         handleMultipleWindowsSession(evt, sessionId, peerId);
       } else if (name == 'peer_info') {
@@ -1177,6 +1179,49 @@ class FfiModel with ChangeNotifier {
                 buttonStyle: style),
         ],
         onCancel: onClose,
+      );
+    });
+  }
+
+  // The user opted into the mesh tunnel but it cannot be used. Ask how to
+  // proceed before the client connects on: the answer goes back through
+  // mainSetOption with the transient key "mesh-tunnel-fallback" and value
+  // "Y-<id>" (direct/classic), "N-<id>" (cancel the session), or "R-<id>"
+  // (retry the tunnel).
+  Future<void> handleMeshTunnelFallback(
+      Map<String, dynamic> evt, SessionID sessionId, String peerId) async {
+    final id = evt['id'].toString();
+    final reason = evt['reason'].toString();
+    final dialogManager = parent.target?.dialogManager;
+    if (dialogManager == null) {
+      // No dialog surface: auto-confirm the fallback so the client unblocks.
+      bind.mainSetOption(key: 'mesh-tunnel-fallback', value: 'Y-$id');
+      return;
+    }
+    dialogManager.show(tag: '$sessionId-mesh-fallback-$id',
+        (setState, close, context) {
+      reply(String decision) {
+        bind.mainSetOption(key: 'mesh-tunnel-fallback', value: '$decision-$id');
+        close();
+      }
+
+      return CustomAlertDialog(
+        title: Text(translate('custom_mesh_tunnel_fallback_title')),
+        content: Text(
+            reason == 'peer-no-tunnel'
+                ? translate('custom_mesh_tunnel_fallback_no_tunnel')
+                : translate('custom_mesh_tunnel_fallback_failed')),
+        actions: [
+          dialogButton(translate('custom_mesh_tunnel_fallback_retry'),
+              onPressed: () => reply('R')),
+          dialogButton('Cancel', onPressed: () => reply('N'), isOutline: true),
+          dialogButton(translate('custom_mesh_tunnel_fallback_classic'),
+              onPressed: () => reply('Y'), isOutline: true),
+        ],
+        // Closing the dialog without choosing ends the session: the user did
+        // not approve falling back, so do not silently continue classic.
+        onCancel: () =>
+            bind.mainSetOption(key: 'mesh-tunnel-fallback', value: 'N-$id'),
       );
     });
   }

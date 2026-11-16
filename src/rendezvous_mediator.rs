@@ -774,6 +774,16 @@ impl RendezvousMediator {
             webrtc_sdp_answer,
             ..Default::default()
         };
+        // MoDesk mesh tunnel: advertise the serve tunnel on the relay path as
+        // well, so the controlling side can tunnel through tailcat's DERP
+        // relays even when the punch failed and we had to fall back to a relay
+        // (symmetric NAT). The rendezvous server forwards these fields as-is.
+        // Empty when the switch is off or the serve tunnel is not up.
+        let (tailcat_addr, tailcat_port) = crate::tailcat::current_serve_addr()
+            .map(|(a, p)| (a, p as i32))
+            .unwrap_or_default();
+        rr.tailcat_addr = tailcat_addr;
+        rr.tailcat_port = tailcat_port;
         if initiate {
             rr.uuid = uuid.clone();
             rr.relay_server = relay_server.clone();
@@ -1178,6 +1188,13 @@ impl RendezvousMediator {
         }
         use hbb_common::protobuf::Enum;
         let nat_type = NatType::from_i32(Config::get_nat_type()).unwrap_or(NatType::UNKNOWN_NAT);
+        // Advertise the mesh tunnel to the controlling side (if the rendezvous
+        // server forwards it): the address is one-time and tied to our serve
+        // child, the port is the direct listen the tunnel exposes. Empty when
+        // the switch is off or the tunnel is not up — the peer falls back.
+        let (tailcat_addr, tailcat_port) = crate::tailcat::current_serve_addr()
+            .map(|(a, p)| (a, p as i32))
+            .unwrap_or_default();
         let msg_punch = PunchHoleSent {
             socket_addr: ph.socket_addr,
             id: Config::get_id(),
@@ -1186,6 +1203,8 @@ impl RendezvousMediator {
             version: crate::VERSION.to_owned(),
             socket_addr_v6,
             webrtc_sdp_answer,
+            tailcat_addr,
+            tailcat_port,
             ..Default::default()
         };
         if ph.udp_port > 0 {
@@ -1400,6 +1419,23 @@ fn get_direct_port() -> i32 {
     port
 }
 
+/// Keep the custom mesh tunnel (tailcat serve) in step with the direct-access
+/// listener: run it only while the direct listen is up and the tunnel switch
+/// is on. The served port follows the direct port, because the controlling
+/// side forwards to exactly that port (punch clients reach it over UDP punch
+/// or the direct listen; tunnel clients reach it through tailcat).
+/// Called once per second by the direct_server loop, so switch flips and
+/// port changes take effect within a tick; ensure_tunnel_serve() itself
+/// restarts the child when the port changes.
+#[inline]
+fn sync_mesh_tunnel(listen_up: bool, port: i32) {
+    if listen_up && crate::tailcat::tunnel_switch_on() {
+        let _ = crate::tailcat::ensure_tunnel_serve(port as u16);
+    } else {
+        crate::tailcat::stop_tunnel_serve();
+    }
+}
+
 async fn direct_server(server: ServerPtr) {
     let mut listener = None;
     let mut port = 0;
@@ -1429,6 +1465,8 @@ async fn direct_server(server: ServerPtr) {
                         if port != get_direct_port() {
                             break;
                         }
+                        // No direct listen, so no point serving a tunnel to it.
+                        sync_mesh_tunnel(false, port);
                         sleep(1.).await;
                     }
                 }
@@ -1440,12 +1478,23 @@ async fn direct_server(server: ServerPtr) {
                 listener = None;
                 continue;
             }
+            // One tunnel check per accept timeout tick: picks up switch flips
+            // and restarts the serve child when the direct port changed.
+            sync_mesh_tunnel(true, port);
             if let Ok(Ok((stream, addr))) = hbb_common::timeout(1000, l.accept()).await {
                 stream.set_nodelay(true).ok();
                 log::info!("direct access from {}", addr);
                 let local_addr = stream
                     .local_addr()
                     .unwrap_or(Config::get_any_listen_addr(true));
+                // MoDesk: loopback arrivals are tailcat serve forwards (the
+                // serve child dials the direct port locally). The controlling
+                // side runs the standard secure_connection() on tunnel
+                // connections and waits for our SignedId exactly like on the
+                // relay/punch paths, so answer the identity handshake for
+                // them; real LAN direct-access clients keep the classic
+                // no-handshake behavior (they log in straight away).
+                let secure = addr.ip().is_loopback();
                 let server = server.clone();
                 tokio::spawn(async move {
                     allow_err!(
@@ -1453,7 +1502,7 @@ async fn direct_server(server: ServerPtr) {
                             server,
                             hbb_common::Stream::from(stream, local_addr),
                             addr,
-                            false,
+                            secure,
                             ConnectionMeta::default(), // Direct connections don't have server-side user context.
                         )
                         .await
@@ -1463,6 +1512,9 @@ async fn direct_server(server: ServerPtr) {
                 sleep(0.1).await;
             }
         } else {
+            // Listen is down (service stopped or start failure): the tunnel
+            // serve must not advertise a port nobody is listening on.
+            sync_mesh_tunnel(false, port);
             sleep(1.).await;
         }
     }

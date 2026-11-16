@@ -105,7 +105,18 @@ set(RUSTDESK_LIB_BUILD_TYPE $<IF:$<CONFIG:Debug>,debug,release>)
 message(STATUS "rustdesk lib build type: ${RUSTDESK_LIB_BUILD_TYPE}")
 set(RUSTDESK_LIB "../../target/${RUSTDESK_LIB_BUILD_TYPE}/librustdesk.dll")
 install(FILES "${RUSTDESK_LIB}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-COMPONENT Runtime RENAME librustdesk.dll)
+ COMPONENT Runtime RENAME librustdesk.dll)
+
+# tailcat (custom mesh tunnel) bundled binary, next to the app executable.
+# Fetched at build time by res/tailcat/fetch.ps1; install only when present so
+# builds without the binary still succeed (tunnel auto-falls back).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../res/tailcat/tailcat.exe")
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../res/tailcat/tailcat.exe"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+else()
+  message(STATUS "tailcat binary not found, bundle will ship without the mesh tunnel")
+endif()
 
 # Fully re-copy the assets directory on each build to avoid having stale files
 # from a previous install.

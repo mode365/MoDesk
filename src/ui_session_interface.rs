@@ -1767,6 +1767,12 @@ pub trait InvokeUiSession: Send + Sync + Clone + 'static + Sized + Default {
     fn printer_request(&self, id: i32, path: String);
     fn handle_screenshot_resp(&self, sid: String, msg: String);
     fn handle_terminal_response(&self, response: TerminalResponse);
+    /// Ask the user to confirm a mesh-tunnel fallback. Returns whether an
+    /// interactive UI took the request and will answer through the fallback
+    /// reply channel; the default says "no UI, proceed with the fallback".
+    fn confirm_mesh_tunnel_fallback(&self, _id: i64, _reason: &str) -> bool {
+        false
+    }
 }
 
 impl<T: InvokeUiSession> Deref for Session<T> {
@@ -1807,6 +1813,29 @@ impl<T: InvokeUiSession> Interface for Session<T> {
 
     fn handle_login_error(&self, err: &str) -> bool {
         handle_login_error(self.lc.clone(), err, self)
+    }
+
+    fn confirm_mesh_tunnel_fallback<'a>(
+        &'a self,
+        reason: &'a str,
+    ) -> hbb_common::futures::future::BoxFuture<'a, crate::tailcat::FallbackDecision> {
+        Box::pin(async move {
+            let id = crate::tailcat::next_fallback_id();
+            // Register before the event goes out, so a fast answer cannot race.
+            let rx = crate::tailcat::begin_fallback_confirm(id);
+            if !self.ui_handler.confirm_mesh_tunnel_fallback(id, reason) {
+                crate::tailcat::cancel_fallback_confirm(id);
+                return crate::tailcat::FallbackDecision::Direct;
+            }
+            // No re-push loop: the session window's event stream is registered
+            // before the connect thread spawns, so this single event is never
+            // dropped here — re-showing the dialog on a fixed schedule caused
+            // the "cancel keeps re-prompting" bug. An unanswered single prompt
+            // times out to Direct so the connection never hangs.
+            crate::tailcat::wait_fallback_confirm(rx, 30)
+                .await
+                .unwrap_or(crate::tailcat::FallbackDecision::Direct)
+        })
     }
 
     fn set_multiple_windows_session(&self, sessions: Vec<WindowsSession>) {

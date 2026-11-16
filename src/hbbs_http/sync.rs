@@ -322,6 +322,12 @@ const BLOCKED_CONFIG_OPTIONS: &[&str] = &[
     keys::OPTION_WINDOWS_SERVICE_VIDEO_SAVE_DIRECTORY,
     "stop-service",
     "reg_recovery",
+    // MoDesk mesh tunnel: local UI state plus a transient per-connection
+    // decision. Never allow a server-stored strategy snapshot to replay old
+    // values over what the user just chose in the UI.
+    "custom-mesh-tunnel",
+    "custom-mesh-tunnel-prompt",
+    "mesh-tunnel-pending",
 ];
 
 fn filter_config_options(options: &mut HashMap<String, String>) {

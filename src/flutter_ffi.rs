@@ -1022,6 +1022,32 @@ pub fn main_get_error() -> String {
 }
 
 pub fn main_set_option(key: String, value: String) -> hbb_common::anyhow::Result<()> {
+if key == "mesh-tunnel-fallback" {
+        // Transient reply from the mesh-tunnel fallback dialog, not a stored
+        // option. Value: "Y-<id>" (direct/classic), "N-<id>" (cancel), or
+        // "R-<id>" (retry the tunnel).
+        if let Some((decision, id)) = value.rsplit_once('-') {
+            if let Ok(id) = id.parse::<i64>() {
+                let d = match decision {
+                    "Y" => crate::tailcat::FallbackDecision::Direct,
+                    "N" => crate::tailcat::FallbackDecision::Cancel,
+                    "R" => crate::tailcat::FallbackDecision::Retry,
+                    _ => crate::tailcat::FallbackDecision::Direct,
+                };
+crate::tailcat::reply_fallback(id, d);
+                log::info!("mesh tunnel fallback reply: {} id {}", decision, id);
+            }
+        }
+        return Ok(());
+    }
+    if key == "mesh-tunnel-pending" {
+        // Per-connection encrypt/direct decision from the connect dialog.
+        // Deliberately NOT stored in the options map: option storage is
+        // synced/replayed (heartbeat strategy, service ipc) and the decision
+        // is transient anyway. In-process visibility is immediate.
+        crate::tailcat::set_tunnel_pending(value == "Y");
+        return Ok(());
+    }
     if key == "2fa"
         || key == keys::OPTION_ENABLE_TRUSTED_DEVICES
         || key == keys::OPTION_TRUSTED_DEVICE_EXPIRATION
