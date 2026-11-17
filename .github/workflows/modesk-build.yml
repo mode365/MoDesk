@@ -1,0 +1,26 @@
+name: MoDesk Client Build
+
+# MoDesk 客户端构建工作流
+# 触发方式：
+#   1) workflow_dispatch —— 在 GitHub Actions 页面手动点 Run 触发
+#   2) push 打 v* tag —— 打 v 开头的 tag 时自动构建并发 Release
+# 普通 git push 不触发任何构建（避免白白消耗 Actions 时长）
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/flutter-build.yml
+    secrets: inherit
+    with:
+      upload-artifact: true
+      upload-tag: ${{ github.ref_name }}
+      # 非官方 rustdesk/rustdesk 仓库不发布更新元数据
+      publish-update-metadata: false
