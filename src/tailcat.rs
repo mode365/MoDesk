@@ -47,10 +47,55 @@ pub fn set_tunnel_pending(encrypt: bool) {
 
 /// Path of the bundled tailcat binary next to the running executable.
 pub fn binary_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    let name = if cfg!(windows) { "tailcat.exe" } else { "tailcat" };
-    let p = dir.join(name);
+    #[cfg(target_os = "android")]
+    {
+        // On Android the process executable is app_process, so `current_exe`
+        // tells nothing about the app layout. tailcat ships as
+        // jniLibs/libtailcat.so — the only file pattern the packaging system
+        // keeps from the APK — and is extracted (useLegacyPackaging) into the
+        // app's nativeLibraryDir, which stays executable on Android 10+.
+        return android_binary_path();
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let exe = std::env::current_exe().ok()?;
+        let dir = exe.parent()?;
+        let name = if cfg!(windows) { "tailcat.exe" } else { "tailcat" };
+        let p = dir.join(name);
+        if p.exists() {
+            Some(p)
+        } else {
+            None
+        }
+    }
+}
+
+/// Resolve `<nativeLibraryDir>/libtailcat.so` through the Android
+/// ApplicationInfo of the running app.
+#[cfg(target_os = "android")]
+fn android_binary_path() -> Option<std::path::PathBuf> {
+    use jni::objects::JObject;
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let context = unsafe { JObject::from_raw(ctx.context().cast()) };
+    let app_info = env
+        .call_method(
+            &context,
+            "getApplicationInfo",
+            "()Landroid/content/pm/ApplicationInfo;",
+            &[],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    let dir_obj = env
+        .get_field(&app_info, "nativeLibraryDir", "Ljava/lang/String;")
+        .ok()?
+        .l()
+        .ok()?;
+    let dir: String = env.get_string(&dir_obj.into()).ok()?.into();
+    let p = std::path::PathBuf::from(dir).join("libtailcat.so");
     if p.exists() {
         Some(p)
     } else {

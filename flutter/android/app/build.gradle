@@ -123,6 +123,16 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules'
         }
     }
+
+    packagingOptions {
+        // tailcat (custom mesh tunnel) ships as jniLibs/libtailcat.so and is
+        // exec'd at runtime from nativeLibraryDir; without legacy packaging
+        // .so files are only mmap'ed straight from the APK and never land as
+        // executable files, which would break the tunnel.
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
 }
 
 flutter {

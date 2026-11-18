@@ -331,6 +331,14 @@ jobs:
         shell: bash
         run: echo "SODIUM_LIB_DIR=$VCPKG_ROOT/installed/${{ matrix.job.vcpkg-triplet }}/lib" >> "$GITHUB_ENV"
 
+      - name: Fetch tailcat (mesh tunnel binary)
+        # Downloads the official tailcat v0.7.0 release for this arch; the
+        # Windows CMake install step bundles it next to modesk.exe. Without
+        # this step the bundle ships without the mesh tunnel.
+        if: env.UPLOAD_ARTIFACT == 'true'
+        shell: powershell
+        run: .\res\tailcat\fetch.ps1 -Arch ${{ matrix.job.arch == 'aarch64' && 'arm64' || 'amd64' }}
+
       - name: Build rustdesk
         run: |
           # Windows: build RustDesk
@@ -1131,6 +1139,21 @@ jobs:
           # Opt-in, and its macOS tests run nowhere else.
           cargo test --locked --release -p clipboard --features unix-file-copy-paste
 
+      - name: Bundle tailcat (mesh tunnel binary)
+        # Cross-compile tailcat (Go, static) and drop it next to the main
+        # executable inside the .app bundle, where src/tailcat.rs
+        # binary_path() looks for it.
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
+          git clone --depth 1 --branch v0.7.0 https://github.com/tailscale/tailcat "${RUNNER_TEMP}/tailcat-src"
+          (
+            cd "${RUNNER_TEMP}/tailcat-src" &&
+            GOOS=darwin GOARCH=${{ matrix.job.arch == 'aarch64' && 'arm64' || 'amd64' }} CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid=" -o tailcat .
+          )
+          APP=./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS
+          cp "${RUNNER_TEMP}/tailcat-src/tailcat" "$APP/tailcat"
+          chmod +x "$APP/tailcat"
+
       - name: create unsigned dmg
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
@@ -1643,6 +1666,24 @@ jobs:
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           # temporary use debug sign config
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          # Build tailcat (mesh tunnel) for this ABI and stage it as
+          # libtailcat.so — the only file name pattern Android packaging
+          # keeps from the APK; it extracts into nativeLibraryDir next to
+          # librustdesk.so, where src/tailcat.rs looks for it.
+          git clone --depth 1 --branch v0.7.0 https://github.com/tailscale/tailcat "${RUNNER_TEMP}/tailcat-src"
+          case ${{ matrix.job.target }} in
+            aarch64-linux-android)   TAILCAT_ABI=arm64-v8a;   TAILCAT_GOARCH=arm64 ;;
+            armv7-linux-androideabi) TAILCAT_ABI=armeabi-v7a; TAILCAT_GOARCH=arm  ;;
+            x86_64-linux-android)    TAILCAT_ABI=x86_64;      TAILCAT_GOARCH=amd64 ;;
+            i686-linux-android)      TAILCAT_ABI=x86;         TAILCAT_GOARCH=386  ;;
+          esac
+          (
+            cd "${RUNNER_TEMP}/tailcat-src" &&
+            GOOS=android GOARCH=${TAILCAT_GOARCH} CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid=" -o "${RUNNER_TEMP}/tailcat-bin" . ||
+            GOOS=linux GOARCH=${TAILCAT_GOARCH} CGO_ENABLED=0 go build -trimpath -buildmode=pie -ldflags="-s -w -buildid=" -o "${RUNNER_TEMP}/tailcat-bin" .
+          )
+          mkdir -p ./flutter/android/app/src/main/jniLibs/${TAILCAT_ABI}
+          cp "${RUNNER_TEMP}/tailcat-bin" ./flutter/android/app/src/main/jniLibs/${TAILCAT_ABI}/libtailcat.so
           case ${{ matrix.job.target }} in
             aarch64-linux-android)
               mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
@@ -1853,6 +1894,19 @@ jobs:
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           # temporary use debug sign config
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          # Build tailcat (mesh tunnel) for every bundled ABI as libtailcat.so
+          # (see the per-ABI apk job for the naming rationale).
+          git clone --depth 1 --branch v0.7.0 https://github.com/tailscale/tailcat "${RUNNER_TEMP}/tailcat-src"
+          for spec in "arm64-v8a arm64" "armeabi-v7a arm" "x86_64 amd64" "x86 386"; do
+            set -- ${spec}; abi=$1; goarch=$2
+            (
+              cd "${RUNNER_TEMP}/tailcat-src" &&
+              GOOS=android GOARCH=${goarch} CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid=" -o "${RUNNER_TEMP}/tailcat-${abi}" . ||
+              GOOS=linux GOARCH=${goarch} CGO_ENABLED=0 go build -trimpath -buildmode=pie -ldflags="-s -w -buildid=" -o "${RUNNER_TEMP}/tailcat-${abi}" .
+            )
+            mkdir -p ./flutter/android/app/src/main/jniLibs/${abi}
+            cp "${RUNNER_TEMP}/tailcat-${abi}" ./flutter/android/app/src/main/jniLibs/${abi}/libtailcat.so
+          done
           mv ./flutter/android/app/src/main/jniLibs/arm64-v8a/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
           cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/
           mv ./flutter/android/app/src/main/jniLibs/armeabi-v7a/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
@@ -2179,6 +2233,14 @@ jobs:
               popd
             fi
 
+            # tailcat (mesh tunnel): fetch the official linux binary for this
+            # arch; the deb packaging step in build.py bundles it next to the
+            # main executable.
+            case ${{ matrix.job.arch }} in
+              x86_64)  LINUX_ARCH=amd64 ;;
+              aarch64) LINUX_ARCH=arm64 ;;
+            esac
+            bash ./res/tailcat/fetch.sh ${LINUX_ARCH}
             # build flutter
             pushd /workspace
             export CARGO_INCREMENTAL=0
