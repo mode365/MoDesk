@@ -1,9 +1,8 @@
 name: Flutter Nightly Build
 
 on:
-  schedule:
-    # schedule build every night
-    - cron: "0 0 * * *"
+  # MoDesk: upstream ran a nightly schedule build; disabled — builds are
+  # manual (this workflow / modesk-build.yml) or v* tag triggered only.
   workflow_dispatch:
 
 jobs:
