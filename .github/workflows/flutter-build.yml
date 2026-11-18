@@ -2255,7 +2255,10 @@ jobs:
               x86_64)  LINUX_ARCH=amd64 ;;
               aarch64) LINUX_ARCH=arm64 ;;
             esac
-            bash ./res/tailcat/fetch.sh ${LINUX_ARCH}
+            # NOTE: run-on-arch container leaves the cwd at /opt here (the last
+            # pushd /opt above is never balanced), so use the absolute mount
+            # /workspace instead of the relative ./res path.
+            bash /workspace/res/tailcat/fetch.sh ${LINUX_ARCH}
             # build flutter
             pushd /workspace
             export CARGO_INCREMENTAL=0
