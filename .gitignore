@@ -65,3 +65,6 @@ flutter/web/
 /third_party/libdrmtap/
 # Local git worktrees
 .worktrees/
+
+# MoDesk local MSI output (MSBuild locally to SignOutput)
+/SignOutput/
