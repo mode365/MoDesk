@@ -1139,6 +1139,11 @@ jobs:
           # Opt-in, and its macOS tests run nowhere else.
           cargo test --locked --release -p clipboard --features unix-file-copy-paste
 
+      - name: Setup Go (tailcat cross-compile, needs go.mod 1.27)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
       - name: Bundle tailcat (mesh tunnel binary)
         # Cross-compile tailcat (Go, static) and drop it next to the main
         # executable inside the .app bundle, where src/tailcat.rs
@@ -1656,6 +1661,11 @@ jobs:
           name: librustdesk.so.${{ matrix.job.target }}
           path: ./target/${{ matrix.job.target }}/release/liblibrustdesk.so
 
+      - name: Setup Go (tailcat cross-compile, needs go>=1.27 for tailcat v0.7.0)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
       - name: Build rustdesk
         shell: bash
         env:
@@ -1883,6 +1893,11 @@ jobs:
         with:
           name: librustdesk.so.i686-linux-android
           path: ./flutter/android/app/src/main/jniLibs/x86
+
+      - name: Setup Go (tailcat cross-compile, needs go.mod 1.27)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
 
       - name: Build rustdesk
         shell: bash
