@@ -254,7 +254,7 @@ class MyTheme {
   static const Color accent80 = Color(0xAAFF9A33);
   static const Color canvasColor = Color(0xFF212121);
   static const Color border = Color(0xFFCCCCCC);
-  static const Color idColor = Color(0xFF00B6F0);
+  static const Color idColor = Color(0xFFFC9931);
   static const Color darkGray = Color.fromARGB(255, 148, 148, 148);
   static const Color cmIdColor = Color(0xFF21790B);
   static const Color dark = Colors.black87;
@@ -452,7 +452,7 @@ class MyTheme {
         style:
             MenuStyle(backgroundColor: MaterialStatePropertyAll(Colors.white))),
     colorScheme: ColorScheme.light(
-        primary: Colors.blue, secondary: accent, background: grayBg),
+        primary: Color(0xFFFC9931), secondary: accent, background: grayBg),
     popupMenuTheme: PopupMenuThemeData(
         color: Colors.white,
         shape: RoundedRectangleBorder(
@@ -560,7 +560,7 @@ class MyTheme {
         style: MenuStyle(
             backgroundColor: MaterialStatePropertyAll(Color(0xFF121212)))),
     colorScheme: ColorScheme.dark(
-      primary: Colors.blue,
+      primary: Color(0xFFFC9931),
       secondary: accent,
       background: Color(0xFF24252B),
     ),
@@ -1150,7 +1150,7 @@ Widget createDialogContent(String text) {
     spans.add(TextSpan(
       text: match.group(0) ?? '',
       style: const TextStyle(
-        color: Colors.blue,
+        color: Color(0xFFFC9931),
         decoration: TextDecoration.underline,
       ),
       recognizer: TapGestureRecognizer()
@@ -1417,7 +1417,7 @@ Color str2color2(String str, {List<int> existing = const []}) {
   Map<String, Color> colorMap = {
     "red": Colors.red,
     "green": Colors.green,
-    "blue": Colors.blue,
+    "blue": Color(0xFFFC9931),
     "orange": Colors.orange,
     "purple": Colors.purple,
     "grey": Colors.grey,
