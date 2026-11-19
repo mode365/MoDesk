@@ -29,6 +29,19 @@ if [[ -f "$service_path" ]]; then
   codesign "${sign_args[@]}" "$service_path"
 fi
 
+# Mach-O helper libraries shipped directly in Contents/MacOS (e.g.
+# libtailcat.dylib, the in-process mesh-tunnel library src/tailcat.rs
+# dlopen's). The main executable must be left to the bundle signing below.
+macos_path="$app_path/Contents/MacOS"
+if [[ -d "$macos_path" ]]; then
+  main_exe=$(plutil -extract CFBundleExecutable raw "$app_path/Contents/Info.plist" 2>/dev/null || basename "$app_path" .app)
+  while IFS= read -r -d '' code; do
+    if file -b "$code" | grep -q 'Mach-O'; then
+      codesign "${sign_args[@]}" "$code"
+    fi
+  done < <(find "$macos_path" -type f ! -name "$main_exe" -print0)
+fi
+
 codesign "${sign_args[@]}" --generate-entitlement-der \
   --entitlements "$entitlements" "$app_path"
 codesign --verify --deep --strict --verbose=2 "$app_path"

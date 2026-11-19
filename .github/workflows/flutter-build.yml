@@ -331,13 +331,58 @@ jobs:
         shell: bash
         run: echo "SODIUM_LIB_DIR=$VCPKG_ROOT/installed/${{ matrix.job.vcpkg-triplet }}/lib" >> "$GITHUB_ENV"
 
-      - name: Fetch tailcat (mesh tunnel binary)
-        # Downloads the official tailcat v0.7.0 release for this arch; the
-        # Windows CMake install step bundles it next to modesk.exe. Without
-        # this step the bundle ships without the mesh tunnel.
+      - name: Setup Go (build libtailcat, needs go>=1.27.4)
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.4'
+
+      - name: Build libtailcat (mesh tunnel library)
+        # Builds the c-shared tailcat library that src/tailcat.rs dlopen's
+        # in-process (docs/modesk/tailcat-inprocess.md). The Windows CMake
+        # install step bundles it next to modesk.exe. Pinned to the tailcat
+        # main commit that added cmd/libtailcat; v0.7.0, the last release,
+        # has no C ABI — switch to a release tag once upstream ships one.
         if: env.UPLOAD_ARTIFACT == 'true'
         shell: powershell
-        run: .\res\tailcat\fetch.ps1 -Arch ${{ matrix.job.arch == 'aarch64' && 'arm64' || 'amd64' }}
+        run: |
+          $tc = Join-Path $env:RUNNER_TEMP 'tcbuild'
+          New-Item -ItemType Directory -Force -Path $tc | Out-Null
+          Push-Location $tc
+          try {
+            go mod init tcbuild | Out-Null
+            go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
+            $env:CGO_ENABLED = '1'
+            if ('${{ matrix.job.arch }}' -eq 'x86_64') {
+              # MinGW gcc (bundled with the windows runners) is the toolchain
+              # this library is proven with; Go does not find it on PATH.
+              foreach ($gcc in @('C:\msys64\mingw64\bin\gcc.exe', 'C:\Strawberry\c\bin\gcc.exe')) {
+                if (Test-Path $gcc) { $env:CC = $gcc; break }
+              }
+              if (-not $env:CC) { throw 'no MinGW gcc found for the cgo build' }
+            } else {
+              # windows/arm64 has no arm64 MinGW gcc; cross-compile with
+              # llvm-mingw's aarch64-w64-mingw32 clang. It ships as an x64
+              # toolchain — windows-11-arm runs it under built-in emulation.
+              $llvm = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
+              if (-not (Test-Path "$llvm\bin\aarch64-w64-mingw32-clang.exe")) {
+                $rel = Invoke-RestMethod 'https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest'
+                $asset = $rel.assets | Where-Object { $_.name -like '*-ucrt-x86_64.zip' } | Select-Object -First 1
+                if (-not $asset) { throw 'llvm-mingw release has no ucrt-x86_64 zip asset' }
+                $zip = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+                Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip
+                Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP -Force
+                $dir = Get-ChildItem $env:RUNNER_TEMP -Directory -Filter 'llvm-mingw-*' | Select-Object -First 1
+                Move-Item $dir.FullName $llvm -Force
+              }
+              $env:CC = "$llvm\bin\aarch64-w64-mingw32-clang.exe"
+            }
+            go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" -o libtailcat.dll github.com/tailscale/tailcat/cmd/libtailcat
+            New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\res\tailcat" | Out-Null
+            Copy-Item libtailcat.dll "$env:GITHUB_WORKSPACE\res\tailcat\libtailcat.dll" -Force
+          } finally {
+            Pop-Location
+          }
 
       - name: Build rustdesk
         run: |
@@ -1139,25 +1184,32 @@ jobs:
           # Opt-in, and its macOS tests run nowhere else.
           cargo test --locked --release -p clipboard --features unix-file-copy-paste
 
-      - name: Setup Go (tailcat cross-compile, needs go.mod 1.27)
+      - name: Setup Go (build libtailcat, needs go>=1.27.4)
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27'
+          go-version: '1.27.4'
 
-      - name: Bundle tailcat (mesh tunnel binary)
-        # Cross-compile tailcat (Go, static) and drop it next to the main
-        # executable inside the .app bundle, where src/tailcat.rs
-        # binary_path() looks for it.
+      - name: Bundle libtailcat (mesh tunnel library)
+        # Builds tailcat's c-shared library (output: libtailcat.dylib) and
+        # places it next to the main executable inside the .app bundle, where
+        # src/tailcat.rs dlopen's it (docs/modesk/tailcat-inprocess.md). It
+        # must be in place before the dmg is codesigned, so nested-code
+        # signing covers it. Pinned to the tailcat main commit that added
+        # cmd/libtailcat (v0.7.0 has no C ABI).
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-          git clone --depth 1 --branch v0.7.0 https://github.com/tailscale/tailcat "${RUNNER_TEMP}/tailcat-src"
+          tc="$(mktemp -d)/tcbuild"
+          mkdir -p "$tc"
           (
-            cd "${RUNNER_TEMP}/tailcat-src" &&
-            GOOS=darwin GOARCH=${{ matrix.job.arch == 'aarch64' && 'arm64' || 'amd64' }} CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid=" -o tailcat .
+            cd "$tc"
+            go mod init tcbuild
+            go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
+            CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.job.arch == 'aarch64' && 'arm64' || 'amd64' }} \
+              go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" \
+                -o libtailcat.dylib github.com/tailscale/tailcat/cmd/libtailcat
+            APP="$GITHUB_WORKSPACE/flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS"
+            cp libtailcat.dylib "$APP/libtailcat.dylib"
           )
-          APP=./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS
-          cp "${RUNNER_TEMP}/tailcat-src/tailcat" "$APP/tailcat"
-          chmod +x "$APP/tailcat"
 
       - name: create unsigned dmg
         if: env.UPLOAD_ARTIFACT == 'true'
@@ -1661,10 +1713,10 @@ jobs:
           name: librustdesk.so.${{ matrix.job.target }}
           path: ./target/${{ matrix.job.target }}/release/liblibrustdesk.so
 
-      - name: Setup Go (tailcat cross-compile, needs go>=1.27 for tailcat v0.7.0)
+      - name: Setup Go (build libtailcat, needs go>=1.27.4)
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27'
+          go-version: '1.27.4'
 
       - name: Build rustdesk
         shell: bash
@@ -1676,24 +1728,30 @@ jobs:
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           # temporary use debug sign config
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
-          # Build tailcat (mesh tunnel) for this ABI and stage it as
-          # libtailcat.so — the only file name pattern Android packaging
-          # keeps from the APK; it extracts into nativeLibraryDir next to
-          # librustdesk.so, where src/tailcat.rs looks for it.
-          git clone --depth 1 --branch v0.7.0 https://github.com/tailscale/tailcat "${RUNNER_TEMP}/tailcat-src"
-          case ${{ matrix.job.target }} in
-            aarch64-linux-android)   TAILCAT_ABI=arm64-v8a;   TAILCAT_GOARCH=arm64 ;;
-            armv7-linux-androideabi) TAILCAT_ABI=armeabi-v7a; TAILCAT_GOARCH=arm  ;;
-            x86_64-linux-android)    TAILCAT_ABI=x86_64;      TAILCAT_GOARCH=amd64 ;;
-            i686-linux-android)      TAILCAT_ABI=x86;         TAILCAT_GOARCH=386  ;;
-          esac
+          # Build tailcat (mesh tunnel) for this ABI as libtailcat.so — the
+          # c-shared library src/tailcat.rs dlopen's in-process (see
+          # docs/modesk/tailcat-inprocess.md). Staging it under the
+          # libtailcat.so name (the only file name pattern Android packaging
+          # keeps from the APK) extracts it into nativeLibraryDir next to
+          # librustdesk.so, where the linker namespace resolves the bare
+          # soname.
           (
-            cd "${RUNNER_TEMP}/tailcat-src" &&
-            GOOS=android GOARCH=${TAILCAT_GOARCH} CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid=" -o "${RUNNER_TEMP}/tailcat-bin" . ||
-            GOOS=linux GOARCH=${TAILCAT_GOARCH} CGO_ENABLED=0 go build -trimpath -buildmode=pie -ldflags="-s -w -buildid=" -o "${RUNNER_TEMP}/tailcat-bin" .
+            mkdir -p "${RUNNER_TEMP}/tcbuild" && cd "${RUNNER_TEMP}/tcbuild"
+            go mod init tcbuild
+            go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
+            case ${{ matrix.job.target }} in
+              aarch64-linux-android)   TAILCAT_ABI=arm64-v8a;   TAILCAT_GOARCH=arm64; TAILCAT_TRIPLE=aarch64-linux-android21 ;;
+              armv7-linux-androideabi) TAILCAT_ABI=armeabi-v7a; TAILCAT_GOARCH=arm;   TAILCAT_TRIPLE=armv7a-linux-androideabi21 ;;
+              x86_64-linux-android)    TAILCAT_ABI=x86_64;      TAILCAT_GOARCH=amd64; TAILCAT_TRIPLE=x86_64-linux-android21 ;;
+              i686-linux-android)      TAILCAT_ABI=x86;         TAILCAT_GOARCH=386;   TAILCAT_TRIPLE=i686-linux-android21 ;;
+            esac
+            CC="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/${TAILCAT_TRIPLE}-clang" \
+              CGO_ENABLED=1 GOOS=android GOARCH=${TAILCAT_GOARCH} \
+              go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" \
+                -o libtailcat.so github.com/tailscale/tailcat/cmd/libtailcat
+            mkdir -p "$GITHUB_WORKSPACE/flutter/android/app/src/main/jniLibs/${TAILCAT_ABI}"
+            cp libtailcat.so "$GITHUB_WORKSPACE/flutter/android/app/src/main/jniLibs/${TAILCAT_ABI}/libtailcat.so"
           )
-          mkdir -p ./flutter/android/app/src/main/jniLibs/${TAILCAT_ABI}
-          cp "${RUNNER_TEMP}/tailcat-bin" ./flutter/android/app/src/main/jniLibs/${TAILCAT_ABI}/libtailcat.so
           case ${{ matrix.job.target }} in
             aarch64-linux-android)
               mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
@@ -1894,10 +1952,10 @@ jobs:
           name: librustdesk.so.i686-linux-android
           path: ./flutter/android/app/src/main/jniLibs/x86
 
-      - name: Setup Go (tailcat cross-compile, needs go.mod 1.27)
+      - name: Setup Go (build libtailcat, needs go>=1.27.4)
         uses: actions/setup-go@v5
         with:
-          go-version: '1.27'
+          go-version: '1.27.4'
 
       - name: Build rustdesk
         shell: bash
@@ -1911,17 +1969,24 @@ jobs:
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
           # Build tailcat (mesh tunnel) for every bundled ABI as libtailcat.so
           # (see the per-ABI apk job for the naming rationale).
-          git clone --depth 1 --branch v0.7.0 https://github.com/tailscale/tailcat "${RUNNER_TEMP}/tailcat-src"
-          for spec in "arm64-v8a arm64" "armeabi-v7a arm" "x86_64 amd64" "x86 386"; do
-            set -- ${spec}; abi=$1; goarch=$2
-            (
-              cd "${RUNNER_TEMP}/tailcat-src" &&
-              GOOS=android GOARCH=${goarch} CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid=" -o "${RUNNER_TEMP}/tailcat-${abi}" . ||
-              GOOS=linux GOARCH=${goarch} CGO_ENABLED=0 go build -trimpath -buildmode=pie -ldflags="-s -w -buildid=" -o "${RUNNER_TEMP}/tailcat-${abi}" .
-            )
-            mkdir -p ./flutter/android/app/src/main/jniLibs/${abi}
-            cp "${RUNNER_TEMP}/tailcat-${abi}" ./flutter/android/app/src/main/jniLibs/${abi}/libtailcat.so
-          done
+          (
+            mkdir -p "${RUNNER_TEMP}/tcbuild" && cd "${RUNNER_TEMP}/tcbuild"
+            go mod init tcbuild
+            go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
+            for spec in \
+              "arm64-v8a arm64 aarch64-linux-android21" \
+              "armeabi-v7a arm armv7a-linux-androideabi21" \
+              "x86_64 amd64 x86_64-linux-android21" \
+              "x86 386 i686-linux-android21"; do
+              set -- ${spec}; abi=$1; goarch=$2; triple=$3
+              CC="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/${triple}-clang" \
+                CGO_ENABLED=1 GOOS=android GOARCH=${goarch} \
+                go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" \
+                  -o "libtailcat-${abi}.so" github.com/tailscale/tailcat/cmd/libtailcat
+              mkdir -p "$GITHUB_WORKSPACE/flutter/android/app/src/main/jniLibs/${abi}"
+              cp "libtailcat-${abi}.so" "$GITHUB_WORKSPACE/flutter/android/app/src/main/jniLibs/${abi}/libtailcat.so"
+            done
+          )
           mv ./flutter/android/app/src/main/jniLibs/arm64-v8a/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
           cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/
           mv ./flutter/android/app/src/main/jniLibs/armeabi-v7a/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
@@ -2114,6 +2179,27 @@ jobs:
           name: bridge-artifact
           path: ./
 
+      - name: Setup Go (build libtailcat, needs go>=1.27.4)
+        if: matrix.job.arch == 'x86_64' || env.UPLOAD_ARTIFACT == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.4'
+
+      - name: Build libtailcat.so (mesh tunnel library)
+        # Built on the runner itself (native gcc, Go target == runner arch)
+        # because the ubuntu18.04 build container below has no Go toolchain.
+        # build.py bundles res/tailcat/libtailcat.so into the deb next to the
+        # main executable, where src/tailcat.rs dlopen's it. Pinned to the
+        # tailcat main commit that added cmd/libtailcat (v0.7.0 has no C ABI).
+        if: matrix.job.arch == 'x86_64' || env.UPLOAD_ARTIFACT == 'true'
+        run: |
+          tc="$(mktemp -d)"
+          cd "$tc"
+          go mod init tcbuild
+          go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
+          CGO_ENABLED=1 go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" \
+            -o "${GITHUB_WORKSPACE}/res/tailcat/libtailcat.so" github.com/tailscale/tailcat/cmd/libtailcat
+
       - uses: rustdesk-org/run-on-arch-action@d3fcfbb632b84cf7f6bc772bfaaa2c2f4f8789a8 # no release tag; commit 2026-05-26
         name: Build rustdesk
         id: vcpkg
@@ -2248,17 +2334,9 @@ jobs:
               popd
             fi
 
-            # tailcat (mesh tunnel): fetch the official linux binary for this
-            # arch; the deb packaging step in build.py bundles it next to the
-            # main executable.
-            case ${{ matrix.job.arch }} in
-              x86_64)  LINUX_ARCH=amd64 ;;
-              aarch64) LINUX_ARCH=arm64 ;;
-            esac
-            # NOTE: run-on-arch container leaves the cwd at /opt here (the last
-            # pushd /opt above is never balanced), so use the absolute mount
-            # /workspace instead of the relative ./res path.
-            bash /workspace/res/tailcat/fetch.sh ${LINUX_ARCH}
+            # libtailcat.so (mesh tunnel) was built on the runner before this
+            # container step; build.py bundles it into the deb from
+            # <workspace>/res/tailcat/ (mounted at /workspace).
             # build flutter
             pushd /workspace
             export CARGO_INCREMENTAL=0

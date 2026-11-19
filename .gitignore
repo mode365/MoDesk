@@ -68,3 +68,11 @@ flutter/web/
 
 # MoDesk local MSI output (MSBuild locally to SignOutput)
 /SignOutput/
+
+# === MoDesk: libtailcat build artifacts (built by CI / local scripts; see docs/modesk/tailcat-inprocess.md) ===
+/res/tailcat/libtailcat.dll
+/res/tailcat/libtailcat.dylib
+/res/tailcat/libtailcat.so
+/res/tailcat/libtailcat.h
+/res/tailcat/tailcat
+/res/tailcat/tailcat.exe

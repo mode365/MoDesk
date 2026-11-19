@@ -750,14 +750,13 @@ def build_flutter_deb(version, features):
     system2('rm tmpdeb/usr/bin/rustdesk || true')
     system2(
         f'cp -r {flutter_build_dir}/* tmpdeb/usr/share/rustdesk/')
-    # Bundle the tailcat mesh-tunnel binary, when the builder fetched it into
-    # res/tailcat/ (fetch.sh). It goes next to the main executable — exactly
-    # where src/tailcat.rs binary_path() looks for it. Optional so builds
-    # without the tunnel binary keep working.
-    if os.path.isfile('../res/tailcat/tailcat'):
-        system2('cp ../res/tailcat/tailcat tmpdeb/usr/share/rustdesk/tailcat '
-                '&& chmod a+x tmpdeb/usr/share/rustdesk/tailcat')
-        print('tailcat mesh-tunnel binary bundled into the deb')
+    # Bundle the libtailcat mesh-tunnel library, when the builder staged it in
+    # res/tailcat/ (CI builds it from the pinned tailcat commit). It goes next
+    # to the main executable — exactly where src/tailcat.rs dlopen's it.
+    # Optional so builds without the library keep working (tunnel falls back).
+    if os.path.isfile('../res/tailcat/libtailcat.so'):
+        system2('cp ../res/tailcat/libtailcat.so tmpdeb/usr/share/rustdesk/')
+        print('libtailcat mesh-tunnel library bundled into the deb')
     system2(
         'cp ../res/rustdesk.service tmpdeb/usr/share/rustdesk/files/systemd/')
     system2(

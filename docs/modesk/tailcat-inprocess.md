@@ -1,6 +1,6 @@
 # MoDesk 加密隧道（tailcat / mesh tunnel）in-process 重构
 
-> 状态：进行中（P1）
+> 状态：进行中（P1 完成、P2 构建接线已落地，待 CI 出包与真机联调）
 > 建立日期：2026-11-19
 > 分支：v2-brand
 
@@ -90,12 +90,20 @@ loop {
 
 ## 5. 构建接线（改动点清单）
 
-- [ ] `res/tailcat/fetch.ps1` / `fetch.sh`：从"下载官方 CLI 产物"改为"固定 tailcat main 伪版本，`go build -buildmode=c-shared`"产出（或预编译缓存下载）。
-- [ ] `.github/workflows/flutter-build.yml`：
-  - [ ] Linux/macOS/Windows：c-shared 产物随包（Windows: CMake install 或 build.py 拷贝；Linux: 进 deb/rpm 的 `/usr/share/rustdesk/`；macOS: 进 .app bundle）。
-  - [ ] Android：各 ABI 用 NDK（`CGO_ENABLED=1`, CC=ndk clang）编 c-shared → `jniLibs/<abi>/libtailcat.so`；替换现在 `CGO_ENABLED=0` + `buildmode=pie`（exec 用）的编法。
-- [ ] 桌面 CMake / build.py：安装 `libtailcat.dll/.so/.dylib` 到主程序目录。
-- [ ] 保持 `useLegacyPackaging true`。
+已落地（P2）：
+
+- [x] `res/tailcat/fetch.ps1` / `fetch.sh` **已删除**：不再下载上游 CLI 产物；改为各 CI job 固定 tailcat main 伪版本源码构建 `-buildmode=c-shared`。`res/tailcat/LICENSE` 保留（上游归属声明）。
+- [x] `.github/workflows/flutter-build.yml` 五处：
+  - [x] Windows（`build-for-windows-flutter`）：setup-go 1.27.4 → `go mod init` + `go get tailcat@伪版本` → `CGO_ENABLED=1 go build -buildmode=c-shared -o libtailcat.dll` → `res/tailcat/libtailcat.dll`。x86_64 用 runner 自带 MinGW gcc（`C:\msys64\mingw64\bin\gcc.exe`，与本机验证工具链一致）；**arm64 用 llvm-mingw 的 `aarch64-w64-mingw32-clang` 交叉编译**（MinGW gcc 无 arm64-windows 目标；x64 工具链在 windows-11-arm 上走内置模拟）。产物仅依赖 KERNEL32 + UCRT（`api-ms-win-crt-*`，Win10+ 自带），可安全分发。
+  - [x] macOS（`build-for-macOS`）：setup-go 1.27.4 → c-shared `libtailcat.dylib` → `RustDesk.app/Contents/MacOS/`（dlopen 位于 exe 同目录）。**必须在下发签名前就位**；`sign-macos-app.sh` 已扩展：递归签 `Contents/MacOS` 下除主程序外的 Mach-O（否则 hardened runtime 的 library validation 会拒绝加载未签名 dylib）。
+  - [x] Android per-ABI job（`build-rustdesk-android`）：`CGO_ENABLED=1 GOOS=android`，`CC=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/<triple>21-clang`（API 21，与 `cargo ndk --platform 21` 对齐；NDK r28c）→ `jniLibs/<abi>/libtailcat.so`。triple 对应：`aarch64-linux-android21` / `armv7a-linux-androideabi21` / `x86_64-linux-android21` / `i686-linux-android21`。
+  - [x] Android universal job（`build-rustdesk-android-universal`）：同上，4 个 ABI 循环构建；`ANDROID_NDK_HOME` 由 ubuntu-24.04 镜像默认导出（NDK 27.3）。
+  - [x] Linux（`build-rustdesk-linux`）：**在 runner 上（容器外）原生构建** `res/tailcat/libtailcat.so`（ubuntu18.04 构建容器内无 Go）；x86_64 跑在 ubuntu-22.04、aarch64 跑在 ubuntu-22.04-arm，均原生编译。容器内原 fetch.sh 调用已移除。注意：该 so 在 glibc 2.35 宿主上编译，若目标发行版过老（<2.27）需改为容器内装 Go 编译。
+- [x] 桌面 CMake / build.py：`flutter/windows/CMakeLists.txt` 安装 `libtailcat.dll`（存在才装，缺失则跳过并日志提示）；`build.py` deb 打包把 `res/tailcat/libtailcat.so` 拷到 `/usr/share/rustdesk/`（与主程序同目录，`current_exe()` 解析后即该目录；`postinst` 的 `/usr/bin/rustdesk` 为符号链接不影响）。rpm 保持原状（此前也未含 tailcat）；**MSI 自动收割**（`preprocess.py` 对 `rustdesk/` 便携目录 glob 生成组件，dll 自动入包并在 Windows 签名步骤随 `.dll` 一起签）；**AppImage / Flatpak 由 deb 转换，自动带入**。
+- [x] 保持 `useLegacyPackaging true`（jniLibs 解压为真实文件，dlopen 按 so 名解析）。
+- [x] `.gitignore` 增加 `/res/tailcat/libtailcat.{dll,dylib,so,h}` 与旧 CLI 产物，避免误提交。
+
+不在 P2 范围：iOS（此前也无 tailcat 步骤，保持无隧道）；Windows sciter / Linux sciter 构建（此前未含 tailcat，保持原状）。
 
 ## 6. 版本与合并策略
 
@@ -119,8 +127,9 @@ loop {
 | 2026-11-19 | 本地编 libtailcat.dll（windows amd64 c-shared，40.4MB；13 导出函数齐全；ABI v1） | ✅ |
 | 2026-11-19 | Rust in-process 封装重写 src/tailcat.rs（公共 API 签名零变化）；cargo check 0 error、0 新警告 | ✅ |
 | 2026-11-19 | 探针全链路验证（独立 exe + manifest 宿主）：serve→accept→dial→echo 回环穿过 WireGuard 隧道，双 payload 成功，debug/release 双构建均过 | ✅ |
-| 待办 | workflow/构建接线 + CI 出包（P2） | ⏳ |
-| 待办 | 安卓真机联调（P2 收口） | ⏳ |
+| 2026-11-20 | P2 构建接线落地：workflow 五处（Windows/macOS/Android×2/Linux 全部改为固定伪版本源码构建 c-shared）、`build.py`（deb 带 `libtailcat.so`）、Windows CMake（`libtailcat.dll`）、`sign-macos-app.sh`（签 Contents/MacOS 下额外 Mach-O）、删除 fetch 脚本、gitignore | ✅ |
+| 2026-11-20 | 本地校验：workflow YAML 解析通过（18 jobs）、`build.py` 语法通过；run 44634333321（P1 提交 ead5e0410）仍进行中 | ✅ |
+| 待办 | 新接线首次 CI 出包验证（需用户授权触发）+ 安卓真机联调（P2 收口） | ⏳ |
 | 待办 | 清理与全平台回归（P3） | ⏳ |
 
 ### 8.1 已解决/绕开的环境问题
