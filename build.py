@@ -986,10 +986,23 @@ def build_flutter_windows(version, features, skip_portable_pack):
                  flutter_build_dir_2)
     if skip_portable_pack:
         return
+    # The packer launches the executable named in the payload, so the name must
+    # match the exe this build actually produced. MoDesk renames it (Flutter
+    # CMake BINARY_NAME=modesk), so read the name from the CMake source instead
+    # of assuming upstream's rustdesk.exe — the wrong name makes the portable
+    # self-extractor unpack and then exit silently, with no app ever launched.
+    portable_exe = 'rustdesk.exe'
+    try:
+        with open('flutter/windows/CMakeLists.txt', encoding='utf-8') as f:
+            m = re.search(r'set\(BINARY_NAME\s+"([^"]+)"\)', f.read())
+        if m:
+            portable_exe = m.group(1) + '.exe'
+    except OSError:
+        pass
     os.chdir('libs/portable')
     system2('pip3 install -r requirements.txt')
     system2(
-        f'python3 ./generate.py -f ../../{flutter_build_dir_2} -o . -e ../../{flutter_build_dir_2}/rustdesk.exe')
+        f'python3 ./generate.py -f ../../{flutter_build_dir_2} -o . -e ../../{flutter_build_dir_2}{portable_exe}')
     os.chdir('../..')
     if os.path.exists('./rustdesk_portable.exe'):
         os.replace('./target/release/rustdesk-portable-packer.exe',
