@@ -115,26 +115,38 @@ fn tc() -> Option<&'static TcLib> {
     TC_LIB
         .get_or_init(|| {
             // Load the library and make its first call (Go runtime init) on a
-            // plain dedicated thread: the loading thread's context (stack
-            // layout, TLS, exception handlers of the host runtime) otherwise
-            // leaks into the Go runtime bootstrap. A vanilla std::thread is
-            // the shape the upstream CLI/tests use and is known-good.
-            std::thread::spawn(|| match load_lib() {
-                Ok(lib) => {
-                    let abi = unsafe { (lib.abi_version)() };
-                    log::info!("libtailcat loaded (ABI {})", abi);
-                    Some(lib)
-                }
+            // plain dedicated thread with a large stack. The loading thread's
+            // context (stack layout, TLS, exception handlers of the host
+            // runtime) otherwise leaks into the Go runtime bootstrap, and the
+            // Go runtime init / tailscale net stack needs headroom: the P1
+            // probe was only stable on a 16MiB stack, and the production host
+            // crashed (ACCESS_VIOLATION writing into the Go heap) on the
+            // default small stack. A vanilla std::thread is the shape the
+            // upstream CLI/tests use and is known-good.
+            let handle = std::thread::Builder::new()
+                .name("tailcat-loader".into())
+                .stack_size(16 * 1024 * 1024)
+                .spawn(|| match load_lib() {
+                    Ok(lib) => {
+                        let abi = unsafe { (lib.abi_version)() };
+                        log::info!("libtailcat loaded (ABI {})", abi);
+                        Some(lib)
+                    }
+                    Err(e) => {
+                        log::warn!("libtailcat unavailable: {}", e);
+                        None
+                    }
+                });
+            match handle {
+                Ok(h) => h.join().unwrap_or_else(|_| {
+                    log::warn!("libtailcat load thread panicked");
+                    None
+                }),
                 Err(e) => {
-                    log::warn!("libtailcat unavailable: {}", e);
+                    log::warn!("libtailcat load thread spawn failed: {}", e);
                     None
                 }
-            })
-            .join()
-            .unwrap_or_else(|_| {
-                log::warn!("libtailcat load thread panicked");
-                None
-            })
+            }
         })
         .as_ref()
 }

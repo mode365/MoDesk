@@ -141,7 +141,8 @@ loop {
 
 ### 8.2 遗留观察（非阻塞）
 
-- **librustdesk 测试宿主崩溃（未解）**：`cargo test -- --ignored` 跑 `tailcat_tunnel_e2e` 时，测试进程 `STATUS_ACCESS_VIOLATION`（无 Go panic 输出）；相同逻辑在独立探针 exe（debug/release 均）及 16MB 栈、专用加载线程、已注入 manifest 的条件下全部正常。仅巨型 librustdesk 测试二进制环境触发，疑与该宿主内某个库的异常处理/初始化交互有关。**生产宿主（modesk.exe 独立exe+manifest 形态）与探针同构，风险低；P2 用真实客户端做冒烟验证时重点确认。**
+- **生产宿主 Go 初始化崩溃（已修复，2026-11-20）**：真实生产宿主（modesk.exe 便携版）双击时带 `libtailcat.dll` 即崩、去掉即正常（A/B 实锤）。procdump 转储解析确认为 `ACCESS_VIOLATION (0xC0000005)` **写访问**非法地址 `0x7ffea27c3de0`（位于 librustdesk.dll 基址下方约 73MB、非任何模块 = Go 堆/mmap 区），即 **Go runtime（c-shared）在宿主进程内初始化时写坏指针**；崩溃线程栈涉及 mswsock/crypt32/combase（网络/代理方向）。根因：`src/tailcat.rs` 的 `tc()` 用默认小栈 `std::thread::spawn` 加载并触发 Go runtime 初始化，而 Go 初始化 + tailscale 网络栈需大栈——P1 探针成功条件即"16MB 栈"，生产宿主此前仅缺这一项。**修复：加载线程改 `thread::Builder::stack_size(16MiB)`。** 修复后 `tailcat_tunnel_e2e`（librustdesk 测试宿主）不再在初始化崩溃，可走到 serve 逻辑（P1 时初始化即崩）。
+- **残留：Go 库在 panic 退出阶段仍 `0xc0000005`（观察）**：e2e 测试因 live 网络连不上 DERP 在 `expect("serve failed")` panic 后，进程退出时仍返回 `STATUS_ACCESS_VIOLATION`。属 Go c-shared 在进程异常退出/panic unwind 时与宿主交互问题；**生产正常使用（Go 常驻、无 panic 退出）不触发**，未阻塞，列为观察。
 - **首启偶发 dial 超时**：一次 E2E 中 client_dial 30s 超时（`context deadline exceeded`），复跑即通；疑为 DERP 注册传播窗口。生产侧 serve 有 15s 重试冷却+复用逻辑，会话侧 client.rs 有 Retry/fallback 交互。
 
 ## 9. 已知问题与备注
