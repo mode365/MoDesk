@@ -133,12 +133,15 @@ loop {
 | 2026-11-20 | 生产宿主 Go 初始化崩溃（ACCESS_VIOLATION 写 Go 堆）定位并修复：加载线程改 16MiB 栈（`26fbb30c0`） | ✅ |
 | 2026-11-20 | 双端真机复现"对端未提供 mesh 隧道"定位：服务进程日志 `libtailcat unavailable: requested type cannot possibly work` = libloading `IncompatibleSize`（`get::<u8>` 存在性检查必然失败）→ 库恒"不可用"、serve/forward 全不建。修复：移除 u8 检查（每符号均按真实 fn 指针类型加载） | ✅ |
 | 2026-11-20 | 修复后 E2E 完整通过（注入 manifest 的测试宿主）：serve 地址获取 → forward 7962 → echo 回环 OK（3.09s）；生产 modesk.exe 自带 manifest 无此问题 | ✅ |
-| 2026-11-20 | 双端新包仍 "the mesh tunnel is unavailable" 定位：主控收到的首条消息按 Message.proto field 9 = `hash`（登录密码挑战），非 SignedId(field 3) → 被控端 direct_server 对 serve 的 loopback 到达判 secure=false（Windows 双栈 `[::]` 监听，IPv4 dial 到达为 `::ffff:127.0.0.1`，`Ipv6Addr::is_loopback` 只认 ::1）→ 跳过身份握手直接 `on_open` 发 hash。修复：`try_into_v4(addr).ip().is_loopback()` | ✅ |
+| 2026-11-20 | 双端新包仍 "the mesh tunnel is unavailable" 定位：主控收到的首条消息按 Message.proto field 9 = `hash`（登录密码挑战），非 SignedId(field 3) → 被控端 direct_server 对 serve 的 loopback 到达判 secure=false（Windows 双栈 `[::]` 监听，IPv4 dial 到达为 `::ffff:127.0.0.1`，`Ipv6Addr::is_loopback` 只认 ::1）→ 跳过身份握手直接 `on_open` 发 hash。修复：`try_into_v4(addr).ip().is_loopback()`（`9043f9335`） | ✅ |
+| 2026-11-21 | 修复验证：被控端替换 dll 重启后，21118 首条消息由 45B hash(field 9) 变为 117B SignedId(field 3)；**双端真机实测隧道恢复正常**（用户确认） | ✅ |
 | 待办 | 新接线首次 CI 出包验证（需用户授权触发）+ 安卓真机联调（P2 收口） | ⏳ |
-| 待办 | 双端部署新便携包实测 mesh 隧道会话（用户验证中） | ⏳ |
+| 待办 | 出带时间戳版本号的完整调试安装包（本地调试用 `1.3.5.202611202323` 格式，正式发布回归标准版本号） | ⏳ |
 | 待办 | 清理与全平台回归（P3） | ⏳ |
 
 ### 8.1 已解决/绕开的环境问题
+
+- **Windows 双栈监听下 IPv4-mapped loopback 判定失效（已修复，2026-11-20，`9043f9335`）**：direct_server 监听 `[::]:<direct_port>`（双栈），tailcat serve 子进程 `dial 127.0.0.1:<port>`（IPv4）到达 accept 时为 `::ffff:127.0.0.1`，而 Rust `Ipv6Addr::is_loopback()` 只匹配 `::1` → 隧道到达被误判为 LAN 直连客户端（secure=false）→ 跳过 SignedId 身份握手 → `Connection::start::on_open` 先发 `Message{hash}`（登录密码挑战，Message.proto field 9）→ 控制端 `secure_connection` 等 `SignedId`（field 3）收到 field 9 → `Handshake failed: invalid message type / no SignedId from peer` → "the mesh tunnel is unavailable"（双端新包仍复现的真凶）。定位手段：直连 21118 抓取首条应答字节，按 BytesCodec 帧格式（1-4B 小端头，低位 2bit 编码头长）+ Message.proto 字段号比对，45B = `hash{salt:32B, challenge:6B}` 完全匹配。修复：判定前 `hbb_common::try_into_v4(addr)` 归一化（mapped → 127.0.0.1）。修复后首条应答变为 117B `SignedId`（field 3），双端真机实测隧道恢复。
 
 - **wingoes "incoherent Windows version" panic**：tailscale 的 WinHTTP 代理探测库 wingoes 要求宿主 exe manifest 声明 `supportedOS` GUID（Win10 `{8e0f7a12-...}`）。modesk.exe 的 flutter runner 已内嵌该清单（已验证），正式客户端无此问题；独立测试程序需手动注入 manifest（`mt.exe -manifest xx.manifest -outputresource:xx.exe;#1`）。2026-11-20 在 librustdesk 测试宿主实测确认：注入后 e2e 完整通过。
 - **libloading `IncompatibleSize`：`get::<u8>` 存在性检查必然失败（已修复，2026-11-20）**：`load_lib()` 曾用 `lib.get::<u8>(sym)` 预检 14 个符号存在，而 libloading 要求 `T` 与指针同尺寸，`u8` 恒报 `requested type cannot possibly work` → `tc()` 恒 `None` → serve/forward 全不建、被控端不广告 → 控制端永远 `the peer does not provide the mesh tunnel`（双端新包仍复现的真正根因；同时解释 e2e 曾报 "tailcat serve failed" 其实是加载失败非网络）。P1 独立探针不经过此路径，故从未复现。修复：移除冗余预检，14 个符号在 `TcLib` 构造时均按真实 fn 指针类型逐一 `get`，缺符号报精确错误。
