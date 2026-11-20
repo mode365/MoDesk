@@ -185,30 +185,17 @@ fn load_lib() -> ResultType<TcLib> {
     let path = lib_path().ok_or_else(|| anyhow!("libtailcat not found"))?;
     unsafe {
         let lib = Library::new(&path)?;
-        // load() checks the symbol type is a fn pointer; get() returns &T.
-        let l = |n: &[u8]| -> ResultType<()> {
-            lib.get::<u8>(n).map(|_| ()).map_err(|e| e.into())
-        };
+        // Every symbol below is fetched with its real fn-pointer type, so a
+        // missing or wrongly-typed export fails with a precise error naming
+        // the exact symbol. (The previous u8-typed existence probe here
+        // ALWAYS failed with libloading's IncompatibleSize — "requested type
+        // cannot possibly work" — making libtailcat look unavailable in
+        // every host: the actual root cause of "the peer does not provide
+        // the mesh tunnel". The P1 standalone probe bypassed this path,
+        // which is why it never reproduced.)
         let abi_version = *lib.get::<FnAbiVersion>(b"tc_abi_version\0")?;
         if abi_version() != 1 {
             bail!("unsupported tailcat ABI {}", abi_version());
-        }
-        for sym in [
-            b"tc_token_new\0" as &[u8],
-            b"tc_close\0",
-            b"tc_free\0",
-            b"tc_client_new\0",
-            b"tc_server_new\0",
-            b"tc_info\0",
-            b"tc_server_start\0",
-            b"tc_server_listen\0",
-            b"tc_listener_accept\0",
-            b"tc_client_dial\0",
-            b"tc_conn_read\0",
-            b"tc_conn_write\0",
-            b"tc_conn_close_write\0",
-        ] {
-            l(sym)?;
         }
         Ok(TcLib {
             abi_version,

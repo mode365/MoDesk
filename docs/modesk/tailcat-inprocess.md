@@ -129,12 +129,18 @@ loop {
 | 2026-11-19 | 探针全链路验证（独立 exe + manifest 宿主）：serve→accept→dial→echo 回环穿过 WireGuard 隧道，双 payload 成功，debug/release 双构建均过 | ✅ |
 | 2026-11-20 | P2 构建接线落地：workflow 五处（Windows/macOS/Android×2/Linux 全部改为固定伪版本源码构建 c-shared）、`build.py`（deb 带 `libtailcat.so`）、Windows CMake（`libtailcat.dll`）、`sign-macos-app.sh`（签 Contents/MacOS 下额外 Mach-O）、删除 fetch 脚本、gitignore | ✅ |
 | 2026-11-20 | 本地校验：workflow YAML 解析通过（18 jobs）、`build.py` 语法通过；run 44634333321（P1 提交 ead5e0410）仍进行中 | ✅ |
+| 2026-11-20 | 便携包修复：generate 启动目标改从 CMake `BINARY_NAME` 推导（modesk.exe），自解压不再秒退 | ✅ |
+| 2026-11-20 | 生产宿主 Go 初始化崩溃（ACCESS_VIOLATION 写 Go 堆）定位并修复：加载线程改 16MiB 栈（`26fbb30c0`） | ✅ |
+| 2026-11-20 | 双端真机复现"对端未提供 mesh 隧道"定位：服务进程日志 `libtailcat unavailable: requested type cannot possibly work` = libloading `IncompatibleSize`（`get::<u8>` 存在性检查必然失败）→ 库恒"不可用"、serve/forward 全不建。修复：移除 u8 检查（每符号均按真实 fn 指针类型加载） | ✅ |
+| 2026-11-20 | 修复后 E2E 完整通过（注入 manifest 的测试宿主）：serve 地址获取 → forward 7962 → echo 回环 OK（3.09s）；生产 modesk.exe 自带 manifest 无此问题 | ✅ |
 | 待办 | 新接线首次 CI 出包验证（需用户授权触发）+ 安卓真机联调（P2 收口） | ⏳ |
+| 待办 | 双端部署新便携包实测 mesh 隧道会话（用户验证中） | ⏳ |
 | 待办 | 清理与全平台回归（P3） | ⏳ |
 
 ### 8.1 已解决/绕开的环境问题
 
-- **wingoes "incoherent Windows version" panic**：tailscale 的 WinHTTP 代理探测库 wingoes 要求宿主 exe manifest 声明 `supportedOS` GUID（Win10 `{8e0f7a12-...}`）。modesk.exe 的 flutter runner 已内嵌该清单（已验证），正式客户端无此问题；独立测试程序需手动注入 manifest（`mt.exe -manifest xx.manifest -outputresource:xx.exe;#1`）。
+- **wingoes "incoherent Windows version" panic**：tailscale 的 WinHTTP 代理探测库 wingoes 要求宿主 exe manifest 声明 `supportedOS` GUID（Win10 `{8e0f7a12-...}`）。modesk.exe 的 flutter runner 已内嵌该清单（已验证），正式客户端无此问题；独立测试程序需手动注入 manifest（`mt.exe -manifest xx.manifest -outputresource:xx.exe;#1`）。2026-11-20 在 librustdesk 测试宿主实测确认：注入后 e2e 完整通过。
+- **libloading `IncompatibleSize`：`get::<u8>` 存在性检查必然失败（已修复，2026-11-20）**：`load_lib()` 曾用 `lib.get::<u8>(sym)` 预检 14 个符号存在，而 libloading 要求 `T` 与指针同尺寸，`u8` 恒报 `requested type cannot possibly work` → `tc()` 恒 `None` → serve/forward 全不建、被控端不广告 → 控制端永远 `the peer does not provide the mesh tunnel`（双端新包仍复现的真正根因；同时解释 e2e 曾报 "tailcat serve failed" 其实是加载失败非网络）。P1 独立探针不经过此路径，故从未复现。修复：移除冗余预检，14 个符号在 `TcLib` 构造时均按真实 fn 指针类型逐一 `get`，缺符号报精确错误。
 - **goproxy.cn HTTP/2 断流**：拉 `tailscale.com` 大 zip 时 `INTERNAL_ERROR` 断流；`GODEBUG=http2client=0` 强制 HTTP/1.1 解决。
 - **`go mod tidy` 慎用**：在桩模块上 tidy 会把仅 require 的 tailcat 依赖删掉导致 build 找不到包，用 `go get tailcat@main` + 直接 build。
 - **wingoes 之外还有调用约定坑**：`let...else` 里的 `unsafe {}` 块需加括号；`tc_check` 等错误路径要注意释放语义。
