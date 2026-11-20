@@ -1,4 +1,4 @@
-package com.carriez.flutter_hbb
+package com.mocenter.modesk
 
 /**
  * Handle events from flutter

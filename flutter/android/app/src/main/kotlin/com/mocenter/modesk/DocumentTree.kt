@@ -1,4 +1,4 @@
-package com.carriez.flutter_hbb
+package com.mocenter.modesk
 
 import android.content.Context
 import android.net.Uri

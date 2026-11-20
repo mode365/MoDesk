@@ -1,4 +1,4 @@
-package com.carriez.flutter_hbb
+package com.mocenter.modesk
 
 import android.content.Context
 import android.content.Intent
@@ -102,7 +102,7 @@ internal class DocumentLogs(private val context: Context) {
 
     fun select(uri: Uri, flags: Int) = lock.withLock {
         require(isLogGrant(uri)) {
-            "Please select Android â†’ media."
+            "Please select Android â†?media."
         }
         val permissions = flags and GRANT_FLAGS
         require(permissions == GRANT_FLAGS) { "Read and write access is required for logs" }
