@@ -133,6 +133,7 @@ loop {
 | 2026-11-20 | 生产宿主 Go 初始化崩溃（ACCESS_VIOLATION 写 Go 堆）定位并修复：加载线程改 16MiB 栈（`26fbb30c0`） | ✅ |
 | 2026-11-20 | 双端真机复现"对端未提供 mesh 隧道"定位：服务进程日志 `libtailcat unavailable: requested type cannot possibly work` = libloading `IncompatibleSize`（`get::<u8>` 存在性检查必然失败）→ 库恒"不可用"、serve/forward 全不建。修复：移除 u8 检查（每符号均按真实 fn 指针类型加载） | ✅ |
 | 2026-11-20 | 修复后 E2E 完整通过（注入 manifest 的测试宿主）：serve 地址获取 → forward 7962 → echo 回环 OK（3.09s）；生产 modesk.exe 自带 manifest 无此问题 | ✅ |
+| 2026-11-20 | 双端新包仍 "the mesh tunnel is unavailable" 定位：主控收到的首条消息按 Message.proto field 9 = `hash`（登录密码挑战），非 SignedId(field 3) → 被控端 direct_server 对 serve 的 loopback 到达判 secure=false（Windows 双栈 `[::]` 监听，IPv4 dial 到达为 `::ffff:127.0.0.1`，`Ipv6Addr::is_loopback` 只认 ::1）→ 跳过身份握手直接 `on_open` 发 hash。修复：`try_into_v4(addr).ip().is_loopback()` | ✅ |
 | 待办 | 新接线首次 CI 出包验证（需用户授权触发）+ 安卓真机联调（P2 收口） | ⏳ |
 | 待办 | 双端部署新便携包实测 mesh 隧道会话（用户验证中） | ⏳ |
 | 待办 | 清理与全平台回归（P3） | ⏳ |

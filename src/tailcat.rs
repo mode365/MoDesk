@@ -823,4 +823,120 @@ mod tests {
             drop(f);
         }
     }
+
+    /// Final probe for the controller-side "tunnel handshake: invalid message
+    /// type": forward to the SERVE ADDRESS THE INSTALLED SERVICE ADVERTISED
+    /// to the rendezvous server (the exact one the controlling side received
+    /// in its RelayResponse at 22:51), i.e. the service process's own serve
+    /// node — not a serve node created by this test process. Reads back the
+    /// first bytes the service's direct server sends through it.
+    ///
+    /// Not part of `cargo test` runs (`#[ignore]`): needs libtailcat and the
+    /// installed MoDesk service still running with the same serve node it
+    /// advertised. Run manually:
+    ///   set TAILCAT_LIB=path\to\libtailcat.dll
+    ///   cargo test --lib --features flutter tailcat_service_serve_probe -- --ignored --nocapture
+    #[test]
+    #[ignore = "requires libtailcat + the installed service's advertised serve node"]
+    fn tailcat_service_serve_probe() {
+        // The serve address the service process advertised via hbbs (from the
+        // controller log, RelayResponse at 22:51:41 / 22:52:09).
+        const SERVICE_SERVE_ADDR: &str = "tcpGFwWCDHbXa5B7CVyMTknePSXAWd2oi2dAgtTyIjnoSxBa57OmFrWCAMJQVS_k-24SFZckH9pyP57oxjIAHewGvedv4qVyAmHmFxWCC52zvPEGfduGy77wXA46sXqxMSkJUgAEWupJWlcI5P3GFygaFhToGjYWhudGMzMDJhLmlwbi5kZXZhNG0yMDguMTExLjM5LjM4YTZzMjYwNzpmNzQwOjA6M2Y6OjcyMA";
+        const DIRECT_PORT: u16 = 21118;
+        if option_env!("TAILCAT_LIB").is_none() && std::env::var("TAILCAT_LIB").is_err() {
+            panic!("set TAILCAT_LIB to a libtailcat build first");
+        }
+        let local_port =
+            ensure_tunnel_forward(SERVICE_SERVE_ADDR, DIRECT_PORT).expect("tailcat forward failed");
+        println!("service-serve probe forward local port: {}", local_port);
+
+        let mut client = TcpStream::connect(("127.0.0.1", local_port)).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+        let mut buf = [0u8; 512];
+        match client.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                let hex: String = buf[..n.min(64)]
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                println!(
+                    "service-serve probe RECEIVED {} bytes ({}): {}",
+                    n,
+                    if n > 64 { "head" } else { "all" },
+                    hex
+                );
+            }
+            Ok(_) => println!("service-serve probe EOF: closed without sending anything"),
+            Err(e) => println!(
+                "service-serve probe read error (timeout = nothing sent): {}",
+                e
+            ),
+        }
+        if let Some(f) = forward_slot().lock().unwrap().take() {
+            drop(f);
+        }
+    }
+
+    /// Decision probe for the "tunnel handshake: invalid message type" bug:
+    /// bridge the tunnel to the REAL local direct server (the installed
+    /// MoDesk service listening on 21118) instead of an echo server, then
+    /// read the first bytes the direct server sends through the full
+    /// serve -> forward -> bridge chain, exactly like client.rs's
+    /// secure_connection() would. What arrives here is what the controlling
+    /// side sees as the first message of the identity handshake.
+    ///
+    /// Not part of `cargo test` runs (`#[ignore]`): needs libtailcat next to
+    /// the test binary (or $TAILCAT_LIB) AND the local MoDesk service's
+    /// direct server listening on 21118. Run manually:
+    ///   set TAILCAT_LIB=path\to\libtailcat.dll
+    ///   cargo test --lib --features flutter tailcat_direct_probe -- --ignored --nocapture
+    #[test]
+    #[ignore = "requires libtailcat + the local direct server on 21118"]
+    fn tailcat_direct_probe() {
+        const DIRECT_PORT: u16 = 21118;
+        if option_env!("TAILCAT_LIB").is_none() && std::env::var("TAILCAT_LIB").is_err() {
+            panic!("set TAILCAT_LIB to a libtailcat build first");
+        }
+        let addr = match ensure_tunnel_serve(DIRECT_PORT) {
+            Some(a) => a,
+            None => {
+                std::thread::sleep(SERVE_RESTART_COOLDOWN);
+                ensure_tunnel_serve(DIRECT_PORT).expect("tailcat serve failed")
+            }
+        };
+        println!("probe serve address: {}", addr);
+
+        let local_port =
+            ensure_tunnel_forward(&addr, DIRECT_PORT).expect("tailcat forward failed");
+        println!("probe forward local port: {}", local_port);
+
+        let mut client = TcpStream::connect(("127.0.0.1", local_port)).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut buf = [0u8; 512];
+        match client.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                let hex: String = buf[..n.min(64)]
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                println!(
+                    "probe RECEIVED {} bytes through the tunnel ({}): {}",
+                    n,
+                    if n > 64 { "head" } else { "all" },
+                    hex
+                );
+                println!(
+                    "probe ascii head: {:?}",
+                    String::from_utf8_lossy(&buf[..n.min(48)])
+                );
+            }
+            Ok(_) => println!("probe EOF: the peer closed without sending anything"),
+            Err(e) => println!("probe read error (timeout means nothing was sent): {}", e),
+        }
+
+        stop_tunnel_serve();
+        if let Some(f) = forward_slot().lock().unwrap().take() {
+            drop(f);
+        }
+    }
 }

@@ -1494,7 +1494,14 @@ async fn direct_server(server: ServerPtr) {
                 // relay/punch paths, so answer the identity handshake for
                 // them; real LAN direct-access clients keep the classic
                 // no-handshake behavior (they log in straight away).
-                let secure = addr.ip().is_loopback();
+                // NOTE: on Windows the dual-stack [::] listener accepts IPv4
+                // dials as IPv4-mapped IPv6 (::ffff:127.0.0.1), and
+                // Ipv6Addr::is_loopback() only matches ::1 — normalize with
+                // try_into_v4 first, otherwise the tunnel client is mistaken
+                // for a LAN direct-access client, gets the login Hash
+                // challenge instead of the SignedId handshake, and fails
+                // with "invalid message type / no SignedId from peer".
+                let secure = hbb_common::try_into_v4(addr).ip().is_loopback();
                 let server = server.clone();
                 tokio::spawn(async move {
                     allow_err!(
