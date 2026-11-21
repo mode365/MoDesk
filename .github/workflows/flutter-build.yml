@@ -2425,8 +2425,10 @@ jobs:
       - name: Rename archlinux package
         if: matrix.job.arch == 'x86_64' && env.UPLOAD_ARTIFACT == 'true'
         run: |
+          # the pkg.tar.zst is built inside the container by makepkg as
+          # root, so renaming it on the runner user needs sudo
           for f in res/rustdesk-*.pkg.tar.zst; do
-            mv "$f" "res/MoDesk-${f#res/rustdesk-}"
+            sudo mv "$f" "res/MoDesk-${f#res/rustdesk-}"
           done
 
       - name: Publish archlinux package
@@ -3055,8 +3057,9 @@ jobs:
 
       - name: Rename appimage package
         run: |
+          # appimage-builder runs with sudo, so AppImages may be root-owned
           for f in ./appimage/rustdesk-*.AppImage; do
-            mv "$f" "${f/rustdesk-/MoDesk-}"
+            sudo mv "$f" "${f/rustdesk-/MoDesk-}"
           done
 
       - name: Publish appimage package
