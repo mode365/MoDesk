@@ -670,6 +670,13 @@ pub fn ensure_tunnel_forward(addr: &str, remote_port: u16) -> Option<u16> {
         Ok(f) => {
             let local_port = f.local_port;
             *guard = Some(f);
+            // Release the slot BEFORE the kick: kick_transport_refresh() takes
+            // this same non-reentrant mutex to read the client handle, so
+            // calling it while this guard is held self-deadlocks the thread —
+            // the forward is never returned, the session stays on the
+            // "connecting" spinner forever, and every later attempt blocks on
+            // the same lock.
+            drop(guard);
             // The transport verdict belongs to the new forward: reset it and
             // kick the first disco ping right away, so the quality monitor's
             // first ticks already know direct-vs-relay.
@@ -736,12 +743,19 @@ fn kick_transport_refresh(force: bool) {
         return; // another thread already kicked this window
     }
     let Some(lib) = tc() else { return };
-    let Some(client) = forward_slot()
-        .lock()
-        .ok()
-        .and_then(|g| g.as_ref().map(|f| f.client))
-    else {
-        return; // no live forward: nothing to ping
+    // try_lock, never lock: ensure_tunnel_forward() holds this slot while it
+    // starts a forward (libtailcat's client_new is not instant), and this kick
+    // also runs from the quality-monitor tick — blocking there would stall the
+    // session io_loop. A miss just leaves this window unused.
+    let client = match forward_slot().try_lock() {
+        Ok(g) => g.as_ref().map(|f| f.client),
+        Err(_) => {
+            TUNNEL_TRANSPORT_KICK.store(last, Ordering::SeqCst);
+            None
+        }
+    };
+    let Some(client) = client else {
+        return; // busy or no live forward: nothing to ping
     };
     let spawned = std::thread::Builder::new()
         .name("tailcat-disco".into())
