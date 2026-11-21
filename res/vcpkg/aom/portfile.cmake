@@ -41,6 +41,14 @@ if(VCPKG_TARGET_ARCHITECTURE STREQUAL "arm" AND VCPKG_TARGET_IS_LINUX)
   set(aom_target_cpu "-DENABLE_NEON=OFF")
 endif()
 
+# Building for Android from a Windows host: aom's cmake falls back to a bare
+# 'as' assembler for non-Windows/non-Darwin targets, which does not exist on
+# Windows. Disable assembly there so the port can configure and build.
+# Official CI builds Android on Linux, where 'as' is available.
+if(VCPKG_TARGET_IS_ANDROID AND VCPKG_HOST_IS_WINDOWS)
+  set(aom_target_cpu "-DAOM_TARGET_CPU=generic")
+endif()
+
 vcpkg_cmake_configure(
     SOURCE_PATH ${SOURCE_PATH}
     OPTIONS
