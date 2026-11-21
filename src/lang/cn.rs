@@ -838,5 +838,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("custom_mesh_tunnel_fallback_failed", "自定义 MESH 隧道连接失败。是否改用传统方式连接？"),
         ("custom_mesh_tunnel_fallback_retry", "再试一次"),
         ("custom_mesh_tunnel_fallback_classic", "直链"),
+        ("Delay", "延迟"),
+        ("Target Bitrate", "目标码率"),
+        ("Chroma", "色度"),
+        ("Transport", "传输方式"),
     ].iter().cloned().collect();
 }

@@ -304,5 +304,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("custom_mesh_tunnel_fallback_failed", "The custom mesh tunnel could not be established. Connect with the classic method instead?"),
         ("custom_mesh_tunnel_fallback_retry", "Retry"),
         ("custom_mesh_tunnel_fallback_classic", "Direct"),
+        ("Delay", "Delay"),
+        ("Target Bitrate", "Target Bitrate"),
+        ("Chroma", "Chroma"),
+        ("Transport", "Transport"),
     ].iter().cloned().collect();
 }

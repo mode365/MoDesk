@@ -11,6 +11,10 @@ pub struct QualityStatus {
     pub target_bitrate: Option<i32>,
     pub codec_format: Option<CodecFormat>,
     pub chroma: Option<String>,
+    /// Transport shown in the quality monitor: P2P / Relay for the classic
+    /// transports, Mesh_P2P / Mesh_Relay when the encrypted tunnel carries
+    /// the session. Only the controlling side fills it in.
+    pub transport: Option<String>,
 }
 
 #[inline]

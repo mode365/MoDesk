@@ -3942,6 +3942,9 @@ class QualityMonitorData {
   String? targetBitrate;
   String? codecFormat;
   String? chroma;
+  // P2P / Relay / Mesh_P2P / Mesh_Relay, pushed by the Rust side with every
+  // quality-status tick.
+  String? transport;
 }
 
 class QualityMonitorModel with ChangeNotifier {
@@ -3964,6 +3967,15 @@ class QualityMonitorModel with ChangeNotifier {
     final streamType = ffiModel.cachedPeerData.streamType;
     if (!streamType.startsWith('WebRTC')) return null;
     return ffiModel.direct == false ? '$streamType (TURN)' : streamType;
+  }
+
+  // The transport row of the quality monitor. Web names its WebRTC transport
+  // itself; native sessions take the Rust-side verdict (P2P / Relay, or
+  // Mesh_P2P / Mesh_Relay when the encrypted tunnel carries the session),
+  // refreshed with every quality-status tick.
+  String? get sessionTransport {
+    if (isWeb) return webrtcTransport;
+    return data.transport;
   }
 
   checkShowQualityMonitor(SessionID sessionId) async {
@@ -4015,6 +4027,10 @@ class QualityMonitorModel with ChangeNotifier {
       }
       if (evt.containsKey('chroma') && (evt['chroma'] as String).isNotEmpty) {
         _data.chroma = evt['chroma'];
+      }
+      if (evt.containsKey('transport') &&
+          (evt['transport'] as String).isNotEmpty) {
+        _data.transport = evt['transport'];
       }
       notifyListeners();
     } catch (e) {

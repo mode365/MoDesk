@@ -88,6 +88,7 @@ type FnClientDial = unsafe extern "C" fn(TcHandle, TcToken, u16, i32, *mut TcHan
 type FnConnRead = unsafe extern "C" fn(TcHandle, TcToken, *mut c_void, usize, *mut usize, *mut *mut c_char) -> i32;
 type FnConnWrite = unsafe extern "C" fn(TcHandle, TcToken, *const c_void, usize, *mut usize, *mut *mut c_char) -> i32;
 type FnConnCloseWrite = unsafe extern "C" fn(TcHandle, TcToken, *mut *mut c_char) -> i32;
+type FnDiscoPing = unsafe extern "C" fn(TcHandle, TcToken, *mut *mut c_char, *mut *mut c_char) -> i32;
 
 struct TcLib {
     _lib: Library,
@@ -105,6 +106,7 @@ struct TcLib {
     conn_read: FnConnRead,
     conn_write: FnConnWrite,
     conn_close_write: FnConnCloseWrite,
+    client_disco_ping: FnDiscoPing,
 }
 
 /// Loaded library, or None once loading has failed (missing file, bad ABI);
@@ -212,6 +214,7 @@ fn load_lib() -> ResultType<TcLib> {
             conn_read: *lib.get::<FnConnRead>(b"tc_conn_read\0")?,
             conn_write: *lib.get::<FnConnWrite>(b"tc_conn_write\0")?,
             conn_close_write: *lib.get::<FnConnCloseWrite>(b"tc_conn_close_write\0")?,
+            client_disco_ping: *lib.get::<FnDiscoPing>(b"tc_client_disco_ping\0")?,
             _lib: lib,
         })
     }
@@ -667,12 +670,125 @@ pub fn ensure_tunnel_forward(addr: &str, remote_port: u16) -> Option<u16> {
         Ok(f) => {
             let local_port = f.local_port;
             *guard = Some(f);
+            // The transport verdict belongs to the new forward: reset it and
+            // kick the first disco ping right away, so the quality monitor's
+            // first ticks already know direct-vs-relay.
+            TUNNEL_TRANSPORT.store(0, Ordering::SeqCst);
+            kick_transport_refresh(true);
             Some(local_port)
         }
         Err(e) => {
             log::error!("tailcat forward failed: {}", e);
             None
         }
+    }
+}
+
+// ---- controlling side: tunnel transport state (direct vs DERP relay) ----
+//
+// tc_client_disco_ping reports how the pong came back: `endpoint` names the
+// address when it traveled a direct path, otherwise the derp region fields
+// say which relay carried it. Pinging also actively triggers direct path
+// discovery, so a periodic refresh nudges the tunnel toward P2P whenever NAT
+// traversal is possible.
+//
+// The disco ping blocks (bounded by its token), so it never runs inline:
+// tunnel_transport() only reads the cached verdict and, at most every few
+// seconds, kicks a background thread to refresh it. The client handle of the
+// live forward is read under the slot lock; the forward outlives every
+// session, so the handle stays valid for the call.
+
+const TRANSPORT_REFRESH_SECS: i64 = 5;
+// 0 unknown, 1 direct (WireGuard P2P), 2 relay (DERP)
+static TUNNEL_TRANSPORT: AtomicU8 = AtomicU8::new(0);
+// Millis of the last refresh kick; CAS'd so only one thread spawns per window.
+static TUNNEL_TRANSPORT_KICK: AtomicI64 = AtomicI64::new(0);
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// The transport of the live forward tunnel: `Some("direct")` (WireGuard
+/// P2P), `Some("relay")` (DERP), or `None` until the first verdict arrives
+/// (or when no forward is alive).
+pub fn tunnel_transport() -> Option<&'static str> {
+    kick_transport_refresh(false);
+    match TUNNEL_TRANSPORT.load(Ordering::SeqCst) {
+        1 => Some("direct"),
+        2 => Some("relay"),
+        _ => None,
+    }
+}
+
+fn kick_transport_refresh(force: bool) {
+    let now = now_millis();
+    let last = TUNNEL_TRANSPORT_KICK.load(Ordering::SeqCst);
+    if !force && now.saturating_sub(last) < TRANSPORT_REFRESH_SECS * 1000 {
+        return;
+    }
+    if TUNNEL_TRANSPORT_KICK
+        .compare_exchange(last, now, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return; // another thread already kicked this window
+    }
+    let Some(lib) = tc() else { return };
+    let Some(client) = forward_slot()
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|f| f.client))
+    else {
+        return; // no live forward: nothing to ping
+    };
+    let spawned = std::thread::Builder::new()
+        .name("tailcat-disco".into())
+        .spawn(move || {
+            let Ok(token) = (unsafe { token_new(lib, OP_TIMEOUT_SECS) }) else {
+                return;
+            };
+            let mut out: *mut c_char = ptr::null_mut();
+            let mut err: *mut c_char = ptr::null_mut();
+            let code = unsafe { (lib.client_disco_ping)(client, token, &mut out, &mut err) };
+            let msg = unsafe { take_cstr(lib, err) };
+            let json = unsafe { take_cstr(lib, out) };
+            unsafe { tc_close_quiet(lib, token) };
+            if code != TC_OK {
+                log::debug!("tailcat disco ping failed: code {} ({})", code, msg);
+                return;
+            }
+            // Verdict: endpoint set -> direct; derp region set -> relay.
+            let verdict = serde_json::from_str::<serde_json::Value>(&json)
+                .map_err(|e| anyhow!("tailcat disco parse: {}", e))
+                .and_then(|v| {
+                    let endpoint = v.get("endpoint").and_then(|e| e.as_str()).unwrap_or("");
+                    if !endpoint.is_empty() {
+                        Ok(1)
+                    } else {
+                        let region =
+                            v.get("derp_region_id").and_then(|r| r.as_i64()).unwrap_or(0);
+                        if region != 0 {
+                            Ok(2)
+                        } else {
+                            bail!("disco pong names neither endpoint nor derp region")
+                        }
+                    }
+                });
+            match verdict {
+                Ok(s) => {
+                    TUNNEL_TRANSPORT.store(s, Ordering::SeqCst);
+                    log::info!(
+                        "tailcat transport: {}",
+                        if s == 1 { "direct" } else { "relay" }
+                    );
+                }
+                Err(e) => log::debug!("tailcat disco verdict: {}", e),
+            }
+        });
+    if let Err(e) = spawned {
+        log::debug!("tailcat disco thread spawn failed: {}", e);
     }
 }
 

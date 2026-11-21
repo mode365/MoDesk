@@ -415,11 +415,26 @@ impl<T: InvokeUiSession> Remote<T> {
                             } else {
                                 Some(self.video_format.clone())
                             };
+                            // Transport for the quality monitor: the classic
+                            // transports are direct (P2P) exactly when the punch
+                            // won; the mesh tunnel asks tailcat, whose disco
+                            // verdict (direct path vs DERP relay) is refreshed
+                            // in the background every few seconds.
+                            let transport = if stream_type == "Tunnel" {
+                                match crate::tailcat::tunnel_transport() {
+                                    Some("direct") => Some("Mesh_P2P".to_owned()),
+                                    Some(_) => Some("Mesh_Relay".to_owned()),
+                                    None => None,
+                                }
+                            } else {
+                                Some((if direct { "P2P" } else { "Relay" }).to_owned())
+                            };
                             self.handler.update_quality_status(QualityStatus {
                                 speed: Some(speed),
                                 fps,
                                 chroma,
                                 codec_format,
+                                transport,
                                 ..Default::default()
                             });
                         }
