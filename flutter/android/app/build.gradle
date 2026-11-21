@@ -53,7 +53,7 @@ String findRustlsPlatformVerifierMavenDir() {
         throw new GradleException("Maven directory not found at: ${mavenDir.path}")
     }
     
-    println("âœ?Found rustls-platform-verifier maven repo at: ${mavenDir.path}")
+    println("âœ“ Found rustls-platform-verifier maven repo at: ${mavenDir.path}")
     return mavenDir.path
 }
 
