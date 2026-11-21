@@ -1,5 +1,5 @@
-[Desktop Entry]
-Name=RustDesk
+﻿[Desktop Entry]
+Name=MoDesk
 GenericName=Remote Desktop
 Comment=Remote Desktop
 Exec=rustdesk %u
@@ -17,3 +17,4 @@ X-Desktop-File-Install-Version=0.23
 [Desktop Action new-window]
 Name=Open a New Window
 Exec=rustdesk %u
+

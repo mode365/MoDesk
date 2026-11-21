@@ -1,5 +1,5 @@
-[Desktop Entry]
-Name=RustDesk
+﻿[Desktop Entry]
+Name=MoDesk
 NoDisplay=true
 MimeType=x-scheme-handler/rustdesk;
 TryExec=rustdesk
@@ -9,3 +9,4 @@ Terminal=false
 Type=Application
 StartupNotify=false
 StartupWMClass=rustdesk
+

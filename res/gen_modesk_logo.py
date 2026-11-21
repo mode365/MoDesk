@@ -19,7 +19,10 @@ Outputs (relative to repo root):
     flutter/assets/logo_dark.png,
     flutter/windows/runner/resources/app_icon.ico
 """
+import io
 import os
+import re
+import struct
 import tempfile
 from PIL import Image, ImageDraw, ImageFont
 
@@ -120,6 +123,109 @@ def make_logo(w, h, ss=4, dark=False):
     return img.resize((w, h), Image.LANCZOS)
 
 
+def make_white_icon(size, content=0.74, radius=0.12, circle=False):
+    """Launcher icon: white plate + motif. content = motif share of the canvas."""
+    ss = 4
+    W = size*ss
+    img = Image.new('RGBA', (W, W), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    if circle:
+        d.ellipse([0, 0, W-1, W-1], fill=WHITE)
+    else:
+        d.rounded_rectangle([0, 0, W-1, W-1], radius=int(W*radius), fill=WHITE)
+    avail = W*content
+    s = avail/max(MOTIF_W, MOTIF_H)
+    mw, mh = MOTIF_W*s, MOTIF_H*s
+    draw_design(d, (W-mw)/2, (W-mh)/2, s, simple=size <= 24)
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def make_foreground(size, ratio=0.60):
+    """Adaptive-icon foreground: transparent canvas, motif kept inside the safe zone."""
+    ss = 4
+    W = size*ss
+    img = Image.new('RGBA', (W, W), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    avail = W*ratio
+    s = avail/max(MOTIF_W, MOTIF_H)
+    mw, mh = MOTIF_W*s, MOTIF_H*s
+    draw_design(d, (W-mw)/2, (W-mh)/2, s, simple=size <= 27)
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def make_macos_icon(size):
+    """Big-Sur style: rounded white tile on transparent, motif inside."""
+    ss = 4 if size <= 512 else 2
+    W = size*ss
+    img = Image.new('RGBA', (W, W), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    inset = int(W*0.085)
+    box = [inset, inset, W-1-inset, W-1-inset]
+    d.rounded_rectangle(box, radius=int((box[2]-box[0])*0.2237), fill=WHITE)
+    avail = (box[2]-box[0])*0.70
+    s = avail/max(MOTIF_W, MOTIF_H)
+    mw, mh = MOTIF_W*s, MOTIF_H*s
+    draw_design(d, (W-mw)/2, (W-mh)/2, s)
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def make_ios_icon(size):
+    """iOS icons are masked by the system: full-bleed white square, no alpha."""
+    ss = 4
+    W = size*ss
+    img = Image.new('RGBA', (W, W), WHITE)
+    d = ImageDraw.Draw(img)
+    avail = W*0.72
+    s = avail/max(MOTIF_W, MOTIF_H)
+    mw, mh = MOTIF_W*s, MOTIF_H*s
+    draw_design(d, (W-mw)/2, (W-mh)/2, s)
+    return img.resize((size, size), Image.LANCZOS).convert('RGB')
+
+
+def write_icns(path):
+    """Write a multi-representation ICNS container (PNG chunks)."""
+    reps = [('icp4', 16), ('icp5', 32), ('icp6', 64), ('ic07', 128),
+            ('ic08', 256), ('ic09', 512), ('ic10', 1024)]
+    body = b''
+    for typ, size in reps:
+        buf = io.BytesIO()
+        make_macos_icon(size).save(buf, 'PNG')
+        data = buf.getvalue()
+        body += typ.encode() + struct.pack('>I', len(data)+8) + data
+    with open(path, 'wb') as f:
+        f.write(b'icns' + struct.pack('>I', len(body)+8) + body)
+
+
+def gen_android():
+    res = os.path.join(RD, 'flutter', 'android', 'app', 'src', 'main', 'res')
+    for dens, factor in (('mdpi', 1), ('hdpi', 1.5), ('xhdpi', 2),
+                         ('xxhdpi', 3), ('xxxhdpi', 4)):
+        px = int(48*factor)
+        make_white_icon(px, content=0.74, radius=0.12).save(
+            os.path.join(res, 'mipmap-'+dens, 'ic_launcher.png'))
+        make_white_icon(px, content=0.64, circle=True).save(
+            os.path.join(res, 'mipmap-'+dens, 'ic_launcher_round.png'))
+        make_foreground(int(108*factor), ratio=0.6).save(
+            os.path.join(res, 'mipmap-'+dens, 'ic_launcher_foreground.png'))
+
+
+def gen_macos():
+    write_icns(os.path.join(RD, 'flutter', 'macos', 'Runner', 'AppIcon.icns'))
+    make_macos_icon(1024).save(os.path.join(RD, 'res', 'mac-icon.png'))
+
+
+def gen_ios():
+    d = os.path.join(RD, 'flutter', 'ios', 'Runner', 'Assets.xcassets',
+                     'AppIcon.appiconset')
+    pattern = re.compile(r'^Icon-App-([\d.]+)x([\d.]+)@(\d)x\.png$')
+    for name in os.listdir(d):
+        m = pattern.match(name)
+        if not m:
+            continue
+        px = int(round(float(m.group(1))*int(m.group(3))))
+        make_ios_icon(px).save(os.path.join(d, name), 'PNG')
+
+
 def main():
     fa = os.path.join(RD, 'flutter', 'assets')
     res = os.path.join(RD, 'res')
@@ -147,8 +253,12 @@ def main():
     # Windows runner exe icon
     make_icon(256).save(os.path.join(runner_res, 'app_icon.ico'), append_images=frame)
 
+    # Platform launcher icons
+    gen_android()
+    gen_macos()
+    gen_ios()
+
     print('ALL DONE')
-    print('preview: %s' % os.path.join(tempfile.gettempdir(), 'modesk-logo-preview.png'))
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 
 import os
 import glob
@@ -381,7 +381,7 @@ def ffi_bindgen_function_refactor():
 
 
 # libdrmtap is fetched at build time from the rustdesk-org fork at a pinned
-# commit — the same way rustdesk sources its other native build deps (vcpkg,
+# commit 鈥?the same way rustdesk sources its other native build deps (vcpkg,
 # flutter_rust_bridge, ...), rather than carrying a git submodule. It is the ONLY
 # pin for the drm backend: rustdesk dlopens this .so at runtime and does not depend on
 # the libdrmtap-sys crate (whose build.rs would statically link the C tree, a helper and
@@ -473,7 +473,7 @@ def _single_real_so(paths, where):
 def build_libdrmtap_so():
     # Build libdrmtap.so from the rustdesk-org fork, fetched at the pinned LIBDRMTAP_SHA. The
     # pivot dlopen-s this .so in-process in the root service (which already holds
-    # CAP_SYS_ADMIN) — no setcap helper, no privileged child. Only the shared
+    # CAP_SYS_ADMIN) 鈥?no setcap helper, no privileged child. Only the shared
     # library target is built (the source also carries a helper binary we do not
     # ship). Returns the path to the built versioned .so (e.g. libdrmtap.so.0.4.x).
     _validate_libdrmtap_pin()
@@ -752,7 +752,7 @@ def build_flutter_deb(version, features):
         f'cp -r {flutter_build_dir}/* tmpdeb/usr/share/rustdesk/')
     # Bundle the libtailcat mesh-tunnel library, when the builder staged it in
     # res/tailcat/ (CI builds it from the pinned tailcat commit). It goes next
-    # to the main executable — exactly where src/tailcat.rs dlopen's it.
+    # to the main executable 鈥?exactly where src/tailcat.rs dlopen's it.
     # Optional so builds without the library keep working (tunnel falls back).
     if os.path.isfile('../res/tailcat/libtailcat.so'):
         system2('cp ../res/tailcat/libtailcat.so tmpdeb/usr/share/rustdesk/')
@@ -953,10 +953,10 @@ def build_flutter_dmg(version, features):
     mac_arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x86_64'
     system2(
         f'FLUTTER_XCODE_ARCHS={mac_arch} FLUTTER_XCODE_ONLY_ACTIVE_ARCH=YES flutter build macos --release')
-    system2('cp -rf ../target/release/service ./build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/')
+    system2('cp -rf ../target/release/service ./build/macos/Build/Products/Release/MoDesk.app/Contents/MacOS/')
     '''
     system2(
-        "create-dmg --volname \"RustDesk Installer\" --window-pos 200 120 --window-size 800 400 --icon-size 100 --app-drop-link 600 185 --icon RustDesk.app 200 190 --hide-extension RustDesk.app rustdesk.dmg ./build/macos/Build/Products/Release/RustDesk.app")
+        "create-dmg --volname \"MoDesk Installer\" --window-pos 200 120 --window-size 800 400 --icon-size 100 --app-drop-link 600 185 --icon MoDesk.app 200 190 --hide-extension MoDesk.app rustdesk.dmg ./build/macos/Build/Products/Release/MoDesk.app")
     os.rename("rustdesk.dmg", f"../rustdesk-{version}.dmg")
     '''
     os.chdir("..")
@@ -989,7 +989,7 @@ def build_flutter_windows(version, features, skip_portable_pack):
     # The packer launches the executable named in the payload, so the name must
     # match the exe this build actually produced. MoDesk renames it (Flutter
     # CMake BINARY_NAME=modesk), so read the name from the CMake source instead
-    # of assuming upstream's rustdesk.exe — the wrong name makes the portable
+    # of assuming upstream's rustdesk.exe 鈥?the wrong name makes the portable
     # self-extractor unpack and then exit silently, with no app ever launched.
     portable_exe = 'rustdesk.exe'
     try:
@@ -1129,9 +1129,9 @@ def main():
             system2('cargo --locked bundle --release --features ' + features)
             if osx:
                 system2(
-                    'strip target/release/bundle/osx/RustDesk.app/Contents/MacOS/rustdesk')
+                    'strip target/release/bundle/osx/MoDesk.app/Contents/MacOS/rustdesk')
                 system2(
-                    'cp libsciter.dylib target/release/bundle/osx/RustDesk.app/Contents/MacOS/')
+                    'cp libsciter.dylib target/release/bundle/osx/MoDesk.app/Contents/MacOS/')
                 # https://github.com/sindresorhus/create-dmg
                 system2('/bin/rm -rf *.dmg')
                 pa = os.environ.get('P')
@@ -1139,15 +1139,15 @@ def main():
                     system2('''
     # buggy: rcodesign sign ... path/*, have to sign one by one
     # install rcodesign via cargo install apple-codesign
-    #rcodesign sign --p12-file ~/.p12/rustdesk-developer-id.p12 --p12-password-file ~/.p12/.cert-pass --code-signature-flags runtime ./target/release/bundle/osx/RustDesk.app/Contents/MacOS/rustdesk
-    #rcodesign sign --p12-file ~/.p12/rustdesk-developer-id.p12 --p12-password-file ~/.p12/.cert-pass --code-signature-flags runtime ./target/release/bundle/osx/RustDesk.app/Contents/MacOS/libsciter.dylib
-    #rcodesign sign --p12-file ~/.p12/rustdesk-developer-id.p12 --p12-password-file ~/.p12/.cert-pass --code-signature-flags runtime ./target/release/bundle/osx/RustDesk.app
+    #rcodesign sign --p12-file ~/.p12/rustdesk-developer-id.p12 --p12-password-file ~/.p12/.cert-pass --code-signature-flags runtime ./target/release/bundle/osx/MoDesk.app/Contents/MacOS/rustdesk
+    #rcodesign sign --p12-file ~/.p12/rustdesk-developer-id.p12 --p12-password-file ~/.p12/.cert-pass --code-signature-flags runtime ./target/release/bundle/osx/MoDesk.app/Contents/MacOS/libsciter.dylib
+    #rcodesign sign --p12-file ~/.p12/rustdesk-developer-id.p12 --p12-password-file ~/.p12/.cert-pass --code-signature-flags runtime ./target/release/bundle/osx/MoDesk.app
     # goto "Keychain Access" -> "My Certificates" for below id which starts with "Developer ID Application:"
-    codesign -s "Developer ID Application: {0}" --force --options runtime  ./target/release/bundle/osx/RustDesk.app/Contents/MacOS/*
-    codesign -s "Developer ID Application: {0}" --force --options runtime  ./target/release/bundle/osx/RustDesk.app
+    codesign -s "Developer ID Application: {0}" --force --options runtime  ./target/release/bundle/osx/MoDesk.app/Contents/MacOS/*
+    codesign -s "Developer ID Application: {0}" --force --options runtime  ./target/release/bundle/osx/MoDesk.app
     '''.format(pa))
                 system2(
-                    'create-dmg "RustDesk %s.dmg" "target/release/bundle/osx/RustDesk.app"' % version)
+                    'create-dmg "RustDesk %s.dmg" "target/release/bundle/osx/MoDesk.app"' % version)
                 os.rename('RustDesk %s.dmg' %
                           version, 'rustdesk-%s.dmg' % version)
                 if pa:
@@ -1162,7 +1162,7 @@ def main():
     # https://gregoryszorc.com/docs/apple-codesign/stable/apple_codesign_getting_started.html#apple-codesign-app-store-connect-api-key
     # p8 file is generated when you generate api key (can download only once)
     rcodesign notary-submit --api-key-path ../.p12/api-key.json  --staple rustdesk-{1}.dmg
-    # verify:  spctl -a -t exec -v /Applications/RustDesk.app
+    # verify:  spctl -a -t exec -v /Applications/MoDesk.app
     '''.format(pa, version))
                 else:
                     print('Not signed')
@@ -1208,3 +1208,4 @@ def md5_file_folder(base_dir):
 
 if __name__ == "__main__":
     main()
+
