@@ -414,6 +414,14 @@ pub struct Connection {
     server_audit_file: String,
     controlled_context: Option<ControlledContext>,
     lr: LoginRequest,
+    // True when the session arrived over the mesh tunnel (encrypted transport):
+    // the connection is bridged to this machine's loopback, so the socket
+    // address is 127.0.0.1 / ::1, and the controller's real public IP only
+    // arrives later via LoginRequest.my_ip.
+    tunneled: bool,
+    // The "new" connection-audit is deferred for a tunneled session until the
+    // login carries the controller's real IP, so 127.0.0.1 is never recorded.
+    deferred_audit_new: bool,
     // Authentication retries may update credentials, but not the requested session scope.
     // A digest, so no peer-controlled strings are retained.
     login_scope: Option<[u8; 32]>,
@@ -609,6 +617,8 @@ impl Connection {
             follow_remote_window: false,
             multi_ui_session: false,
             ip: "".to_owned(),
+            tunneled: false,
+            deferred_audit_new: false,
             disable_audio: false,
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             enable_file_transfer: false,
@@ -1515,19 +1525,29 @@ impl Connection {
                 return false;
             }
         }
+        // MoDesk mesh tunnel: the tunnel bridges the controller's connection to
+        // this machine's own loopback, so `addr` is 127.0.0.1 / ::1 here, not the
+        // controller's real address. The controller's real public IP arrives in
+        // the login (LoginRequest.my_ip, resolved via STUN on the controller);
+        // defer the "new" connection-audit until it does, so the audit never
+        // records the loopback as the controller's address.
+        let tunneled = hbb_common::try_into_v4(addr).ip().is_loopback();
+        self.tunneled = tunneled;
         self.ip = addr.ip().to_string();
         let mut msg_out = Message::new();
         msg_out.set_hash(self.hash.clone());
         self.send(msg_out).await;
         self.get_api_server();
-        let mut audit = json!({
-            "ip": addr.ip(),
-            "action": "new",
-        });
-        if let Some(audit_ref) = self.conn_audit_ref() {
-            audit["conn_audit_ref"] = json!(audit_ref);
+        if !tunneled {
+            let mut audit = json!({
+                "ip": addr.ip(),
+                "action": "new",
+            });
+            if let Some(audit_ref) = self.conn_audit_ref() {
+                audit["conn_audit_ref"] = json!(audit_ref);
+            }
+            self.post_conn_audit(audit);
         }
-        self.post_conn_audit(audit);
         true
     }
 
@@ -2851,6 +2871,26 @@ impl Connection {
 
     async fn handle_login_request_without_validation(&mut self, lr: &LoginRequest) {
         self.lr = lr.clone();
+        // Tunneled session: adopt the controller's real public IP from the login
+        // and post the "new" connection-audit we deferred in on_open (once). A
+        // login without an IP keeps the loopback fallback rather than leaving the
+        // session with no audit record at all.
+        if self.tunneled {
+            if !lr.my_ip.is_empty() {
+                self.ip = lr.my_ip.clone();
+            }
+            if !self.deferred_audit_new {
+                self.deferred_audit_new = true;
+                let mut audit = json!({
+                    "ip": self.ip.clone(),
+                    "action": "new",
+                });
+                if let Some(audit_ref) = self.conn_audit_ref() {
+                    audit["conn_audit_ref"] = json!(audit_ref);
+                }
+                self.post_conn_audit(audit);
+            }
+        }
         self.peer_argb = crate::str2color(&format!("{}{}", &lr.my_id, &lr.my_platform), 0xff);
         if let Some(o) = lr.option.as_ref() {
             self.options_in_login = Some(o.clone());

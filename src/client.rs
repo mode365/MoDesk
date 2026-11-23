@@ -1721,6 +1721,18 @@ impl Client {
             }
         }
         log::info!("peer address: {}, timeout: {}", peer, connect_timeout);
+        // The tunneled (encrypted) transport bridges the connection to the
+        // controlled side's loopback, so the controlled side cannot see our
+        // real source address from the socket; it only learns it through
+        // LoginRequest.my_ip. Resolve that now (cached — one STUN query per
+        // process, and only when a tunnel session is attempted) so the login
+        // can carry it for the connection audit.
+        if crate::tailcat::should_use_tunnel() {
+            // Bounded so a slow/unreachable STUN server never delays the connect;
+            // on failure the login simply carries no IP and the audit keeps the
+            // loopback fallback.
+            let _ = hbb_common::timeout(5000, crate::common::refresh_public_ipv4()).await;
+        }
         let start = std::time::Instant::now();
 
         // MoDesk custom mesh tunnel: when the peer advertised a tailcat address
@@ -4198,6 +4210,10 @@ impl LoginConfigHandler {
             my_id,
             my_name: display_name,
             my_platform,
+            // The tunneled (encrypted) transport bridges to the controlled side's
+            // loopback; the controlled side uses this real public IP (resolved via
+            // STUN) for the connection audit instead of 127.0.0.1.
+            my_ip: crate::common::cached_public_ipv4(),
             option: self.get_option_message(true).into(),
             session_id: self.session_id,
             version: crate::VERSION.to_string(),

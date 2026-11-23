@@ -86,6 +86,11 @@ message LoginRequest {
   string avatar = 17;
   bytes trusted_device_v2_token = 18;
   bool trusted_device_v2_supported = 19;
+  // The controller's public IP, resolved via STUN. Only meaningful when the
+  // session rides the mesh tunnel (encrypted transport): the tunnel bridges to
+  // the controlled side's loopback, so without this the controlled side would
+  // record 127.0.0.1 as the controller's address in the connection audit.
+  string my_ip = 20;
 }
 
 message Terminal {

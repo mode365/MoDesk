@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     future::Future,
     net::SocketAddr,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
     task::Poll,
 };
 
@@ -2789,6 +2789,53 @@ async fn stun_ipv6_test(stun_server: String) -> ResultType<(SocketAddr, String)>
     } else {
         bail!("STUN server returned non-IPv6 address: {}", addr)
     })
+}
+
+/// The controller's real public IPv4, resolved once via STUN and cached for the
+/// process lifetime. The mesh tunnel (encrypted transport) bridges the
+/// controller's connection to the controlled side's loopback, so the controlled
+/// side cannot see this controller's real source address from the socket; it
+/// learns it through LoginRequest.my_ip, which the controller populates from
+/// this, and records it in the connection audit instead of 127.0.0.1.
+static PUBLIC_IPV4: OnceLock<String> = OnceLock::new();
+
+/// Resolve and cache the controller's real public IPv4 via STUN (best effort).
+/// Cached: only the first call touches the network; later calls and
+/// [`cached_public_ipv4`] read the cached value. Returns the cached value once
+/// known.
+pub async fn refresh_public_ipv4() -> Option<String> {
+    use stunclient::StunClient;
+    if let Some(v) = PUBLIC_IPV4.get() {
+        return Some(v.clone());
+    }
+    let Ok(socket) = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0))).await else {
+        return None;
+    };
+    for srv in hbb_common::webrtc::WebRTCStream::default_stun_servers() {
+        let Ok(mut it) = tokio::net::lookup_host(&srv).await else {
+            continue;
+        };
+        let Some(stun_addr) = it.find(|x| x.is_ipv4()) else {
+            continue;
+        };
+        let client = StunClient::new(stun_addr);
+        match client.query_external_address_async(&socket).await {
+            Ok(a) if a.ip().is_ipv4() && !a.ip().is_loopback() => {
+                let ip = a.ip().to_string();
+                let _ = PUBLIC_IPV4.set(ip.clone());
+                log::info!("resolved public ipv4 via STUN: {}", ip);
+                return Some(ip);
+            }
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// The cached public IPv4 from [`refresh_public_ipv4`], or empty if it has not
+/// resolved yet (or could not). Synchronous, safe to call from login builders.
+pub fn cached_public_ipv4() -> String {
+    PUBLIC_IPV4.get().cloned().unwrap_or_default()
 }
 
 /// A global address to ask the kernel for a route to; libwebrtc's QueryDefaultLocalAddress asks
