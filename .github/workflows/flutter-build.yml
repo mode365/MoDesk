@@ -53,12 +53,13 @@ env:
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   VCPKG_CMAKE_VERSION: "4.3.0"
   ARMV7_VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836" # 2025.01.13, got "/opt/artifacts/vcpkg/vcpkg: No such file or directory" with latest version
-  # MoDesk build version: <official-release>.<build-timestamp yyyyMMddHHmmss>.
-  # Keep MODESK_VERSION in sync with VERSION: gen_version() (libs/hbb_common,
-  # src/version.rs is generated per build) reads MODESK_VERSION so the binary
-  # reports the timestamped version while Cargo.toml stays the official semver.
-  VERSION: "1.5.3.20261123121014"
-  MODESK_VERSION: "1.5.3.20261123121014"
+  # MoDesk build version: <official-release>.testN (test/release sequence:
+  # 1.5.3.test1, test2, ...). Keep MODESK_VERSION in sync with VERSION:
+  # gen_version() (libs/hbb_common, src/version.rs is generated per build)
+  # reads MODESK_VERSION so the binary reports the test version while
+  # Cargo.toml stays the official semver.
+  VERSION: "1.5.3.test1"
+  MODESK_VERSION: "1.5.3.test1"
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
@@ -552,8 +553,17 @@ jobs:
         # is x64 / ARM64; the produced Package.msi is globbed since its bin/<platform>/ dir varies.
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
+          # MoDesk: env vars become MSBuild properties (names are case-insensitive), so the
+          # workflow-level VERSION would be nuget/msbuild's $(Version), and a non-3-field
+          # version (1.5.3.testN, 1.5.3.<timestamp>, ...) is NOT a valid NuGet version, which
+          # breaks nuget restore's WriteRestoreGraphTask. The ${{ env.VERSION }} substitutions
+          # below are parse-time literals, so clearing the env var for the toolchain is safe.
+          Remove-Item Env:VERSION -ErrorAction SilentlyContinue
+          # The MSI ProductVersion keeps the official 3-field form: preprocess.py appends its
+          # minute-based revision to a 3-field version, exactly like the official releases.
+          $msiVersion = '${{ env.VERSION }}'.Split('.')[0..2] -join '.'
           pushd ./res/msi
-          python preprocess.py --arp --app-name modesk -d ../../rustdesk
+          python preprocess.py --arp --app-name modesk --version $msiVersion -d ../../rustdesk
           nuget restore msi.sln
           $msiPlatform = if ('${{ matrix.job.arch }}' -eq 'aarch64') { 'ARM64' } else { 'x64' }
           msbuild msi.sln -p:Configuration=Release -p:Platform=$msiPlatform /p:TargetVersion=Windows10
@@ -581,6 +591,11 @@ jobs:
         # preprocess.py against an ARM exe.
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
+          # Same VERSION / MSBuild $(Version) collision as in "Build msi": a non-3-field
+          # version is not a valid NuGet version, so it must not reach nuget/msbuild as the
+          # $(Version) property.
+          Remove-Item Env:VERSION -ErrorAction SilentlyContinue
+          $msiVersion = '${{ env.VERSION }}'.Split('.')[0..2] -join '.'
           git checkout -- res/msi
           cp -r ./rustdesk ./rustdesk-msi-template
           mv ./rustdesk-msi-template/modesk.exe ./rustdesk-msi-template/RDAPPNAM.exe
@@ -591,7 +606,7 @@ jobs:
             Set-Content -Path "$assets/$a" -Value 'placeholder' -NoNewline
           }
           pushd ./res/msi
-          python preprocess.py --arp --template --revision-version 0 -d ../../rustdesk-msi-template --app-name RDAPPNAM
+          python preprocess.py --arp --template --version $msiVersion --revision-version 0 -d ../../rustdesk-msi-template --app-name RDAPPNAM
           $msiPlatform = if ('${{ matrix.job.arch }}' -eq 'aarch64') { 'ARM64' } else { 'x64' }
           msbuild msi.sln -t:clean -p:Configuration=Release -p:Platform=$msiPlatform
           msbuild msi.sln -p:Configuration=Release -p:Platform=$msiPlatform /p:TargetVersion=Windows10
@@ -2356,9 +2371,12 @@ jobs:
               flutter test --no-pub --timeout 60s || exit 1
               popd
             fi
+            # MoDesk: name the asset from the workflow VERSION. The deb is BUILT in
+            # Cargo.toml's version (official upgrade chain), so the original filename
+            # carries 1.5.3 — downstream jobs (appimage/flatpak) and the artifact upload
+            # below reference the workflow VERSION, so the rename must use it too.
             for name in rustdesk*??.deb; do
-              base="${name%%.deb}"
-              mv "$name" "MoDesk-${base#rustdesk-}-${{ matrix.job.arch }}.deb"
+              mv "$name" "MoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}.deb"
             done
 
             # rpm package
@@ -2372,8 +2390,7 @@ jobs:
             HBB=`pwd` rpmbuild ./res/rpm-flutter.spec -bb
             pushd ~/rpmbuild/RPMS/${{ matrix.job.arch }}
             for name in rustdesk*??.rpm; do
-                base="${name%%.rpm}"
-                mv "$name" "/workspace/MoDesk-${base#rustdesk-}.rpm"
+                mv "$name" "/workspace/MoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}.rpm"
             done
 
             # rpm suse package
@@ -2387,8 +2404,7 @@ jobs:
             HBB=`pwd` rpmbuild ./res/rpm-flutter-suse.spec -bb
             pushd ~/rpmbuild/RPMS/${{ matrix.job.arch }}
             for name in rustdesk*??.rpm; do
-                base="${name%%.rpm}"
-                mv "$name" "/workspace/MoDesk-${base#rustdesk-}-suse.rpm"
+                mv "$name" "/workspace/MoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}-suse.rpm"
             done
 
       - name: Publish debian/rpm package
@@ -2431,9 +2447,11 @@ jobs:
         if: matrix.job.arch == 'x86_64' && env.UPLOAD_ARTIFACT == 'true'
         run: |
           # the pkg.tar.zst is built inside the container by makepkg as
-          # root, so renaming it on the runner user needs sudo
+          # root, so renaming it on the runner user needs sudo; the publish
+          # step globs res/MoDesk-$VERSION*.zst, so the rename uses the
+          # workflow VERSION, not makepkg's internal (Cargo.toml) version.
           for f in res/rustdesk-*.pkg.tar.zst; do
-            sudo mv "$f" "res/MoDesk-${f#res/rustdesk-}"
+            sudo mv "$f" "res/MoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}.pkg.tar.zst"
           done
 
       - name: Publish archlinux package
@@ -2734,7 +2752,10 @@ jobs:
             exit 1
           fi
           deb="${debs[0]}"
-          new_deb="${deb/rustdesk-/MoDesk-}"
+          # Name the ASSET from the workflow VERSION (consistent with the other release
+          # files); the glob above stays source-of-truth for what was built, since build.py
+          # names the deb from Cargo.toml.
+          new_deb="MoDesk-${{ env.VERSION }}-unattended-wayland-x86_64.deb"
           mv "$deb" "$new_deb"
           deb="$new_deb"
           echo "DRM_DEB=$deb" >> "$GITHUB_ENV"
@@ -2994,10 +3015,11 @@ jobs:
       - name: Rename rustdesk
         shell: bash
         run: |
+          # use cp to duplicate deb files to fit other packages; the publish/upload
+          # steps below reference the workflow VERSION name, so the copy must
+          # use it too (build.py named the original from Cargo.toml's version).
           for name in rustdesk*??.deb; do
-              # use cp to duplicate deb files to fit other packages.
-              base="${name%%.deb}"
-              cp "$name" "MoDesk-${base#rustdesk-}-${{ matrix.job.arch }}-sciter.deb"
+              cp "$name" "MoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}-sciter.deb"
           done
 
       - name: Publish debian package
@@ -3062,9 +3084,11 @@ jobs:
 
       - name: Rename appimage package
         run: |
-          # appimage-builder runs with sudo, so AppImages may be root-owned
+          # appimage-builder runs with sudo, so AppImages may be root-owned; the publish
+          # step globs MoDesk-$VERSION-*.AppImage, so the rename uses the workflow VERSION
+          # (appimage-builder named it from the recipe's internal version).
           for f in ./appimage/rustdesk-*.AppImage; do
-            sudo mv "$f" "${f/rustdesk-/MoDesk-}"
+            sudo mv "$f" "./appimage/MoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}.AppImage"
           done
 
       - name: Publish appimage package
