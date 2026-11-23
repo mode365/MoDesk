@@ -1613,13 +1613,13 @@ String translate(String name) {
 // This function must be kept the same as the one in rust and sciter code.
 // rust: libs/hbb_common/src/config.rs -> option2bool()
 // sciter: Does not have the function, but it should be kept the same.
+// MoDesk: "direct-server" ships enabled by default (empty = on, "N" = opt out).
 bool option2bool(String option, String value) {
   bool res;
   if (option.startsWith("enable-")) {
     res = value != "N";
   } else if (option.startsWith("allow-") ||
       option == kOptionStopService ||
-      option == kOptionDirectServer ||
       option == kOptionForceAlwaysRelay) {
     res = value == "Y";
   } else {
@@ -1638,10 +1638,11 @@ String bool2option(String option, bool b) {
     res = b ? defaultOptionYes : 'N';
   } else if (option.startsWith('allow-') ||
       option == kOptionStopService ||
-      option == kOptionDirectServer ||
       option == kOptionForceAlwaysRelay) {
     res = b ? 'Y' : defaultOptionNo;
   } else {
+    // "" is true. MoDesk: direct-server defaults on, so its OFF must be an
+    // explicit 'N'; ON stays 'Y'.
     res = b ? 'Y' : 'N';
   }
   return res;

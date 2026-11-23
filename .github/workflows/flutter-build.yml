@@ -53,7 +53,12 @@ env:
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   VCPKG_CMAKE_VERSION: "4.3.0"
   ARMV7_VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836" # 2025.01.13, got "/opt/artifacts/vcpkg/vcpkg: No such file or directory" with latest version
-  VERSION: "1.5.3"
+  # MoDesk build version: <official-release>.<build-timestamp yyyyMMddHHmmss>.
+  # Keep MODESK_VERSION in sync with VERSION: gen_version() (libs/hbb_common,
+  # src/version.rs is generated per build) reads MODESK_VERSION so the binary
+  # reports the timestamped version while Cargo.toml stays the official semver.
+  VERSION: "1.5.3.20261123121014"
+  MODESK_VERSION: "1.5.3.20261123121014"
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
@@ -1763,7 +1768,7 @@ jobs:
               cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
               # build flutter
               pushd flutter
-              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-arm64 --split-per-abi
+              flutter build apk "--${{ matrix.job.reltype }}" --build-name=${{ env.VERSION }} --target-platform android-arm64 --split-per-abi
               mv build/app/outputs/flutter-apk/app-arm64-v8a-${{ matrix.job.reltype }}.apk ../MoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
             ;;
             armv7-linux-androideabi)
@@ -1772,7 +1777,7 @@ jobs:
               cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
               # build flutter
               pushd flutter
-              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-arm --split-per-abi
+              flutter build apk "--${{ matrix.job.reltype }}" --build-name=${{ env.VERSION }} --target-platform android-arm --split-per-abi
               mv build/app/outputs/flutter-apk/app-armeabi-v7a-${{ matrix.job.reltype }}.apk ../MoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
             ;;
             x86_64-linux-android)
@@ -1781,7 +1786,7 @@ jobs:
               cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/x86_64/librustdesk.so
               # build flutter
               pushd flutter
-              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-x64 --split-per-abi
+              flutter build apk "--${{ matrix.job.reltype }}" --build-name=${{ env.VERSION }} --target-platform android-x64 --split-per-abi
               mv build/app/outputs/flutter-apk/app-x86_64-${{ matrix.job.reltype }}.apk ../MoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
             ;;
             i686-linux-android)
@@ -1790,7 +1795,7 @@ jobs:
               cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/x86/librustdesk.so
               # build flutter
               pushd flutter
-              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-x86 --split-per-abi
+              flutter build apk "--${{ matrix.job.reltype }}" --build-name=${{ env.VERSION }} --target-platform android-x86 --split-per-abi
               mv build/app/outputs/flutter-apk/app-x86-${{ matrix.job.reltype }}.apk ../MoDesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
             ;;
           esac
@@ -2003,7 +2008,7 @@ jobs:
           fi
           # build flutter
           pushd flutter
-          flutter build apk "--${{ env.reltype }}" --target-platform android-arm64,android-arm,android-x64${{ env.x86_target }}
+          flutter build apk "--${{ env.reltype }}" --build-name=${{ env.VERSION }} --target-platform android-arm64,android-arm,android-x64${{ env.x86_target }}
           popd
           mkdir -p signed-apk
           mv ./flutter/build/app/outputs/flutter-apk/app-${{ env.reltype }}.apk signed-apk/MoDesk-${{ env.VERSION }}-universal${{ env.suffix }}.apk
