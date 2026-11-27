@@ -833,6 +833,95 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                 setState(() {});
               },
             ),
+          // MoDesk DERP relay map: URL or single inline region JSON (same
+          // dialog/option as the desktop network settings).
+          if (!disabledSettings && !_hideNetwork)
+            SettingsTile(
+                title: Text(translate('custom_derp_map')),
+                value: Text(
+                  () {
+                    final v = bind
+                        .mainGetOptionSync(key: kOptionCustomDerpMap)
+                        .trim();
+                    return v.isEmpty
+                        ? translate('custom_derp_map_default')
+                        : (v.startsWith('http') ? v : translate('inline'));
+                  }(),
+                  style: TextStyle(
+                      fontSize: 12, color: Theme.of(context).disabledColor),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                leading: const Icon(Icons.hub),
+                onPressed: isOptionFixed(kOptionCustomDerpMap)
+                    ? null
+                     : (context) {
+                        // Capture the page-level setState so saving the dialog
+                        // can refresh the tile's summary text.
+                        void Function(void Function()) pageSetState = setState;
+                        gFFI.dialogManager.show((setState, close, context) {
+                          final controller = TextEditingController(
+                              text: bind.mainGetOptionSync(
+                                  key: kOptionCustomDerpMap));
+                          String? errMsg;
+                          submit() async {
+                            final v = controller.text.trim();
+                            final err = validateDerpMapValue(v);
+                            if (err != null) {
+                              setState(() => errMsg = err);
+                              return;
+                            }
+                            await bind.mainSetOption(
+                                key: kOptionCustomDerpMap, value: v);
+                            close();
+                            // Refresh the tile's value text. The dialog's own
+                            // setState only rebuilds the dialog content; the
+                            // enclosing SettingsPage state needs the write below.
+                            pageSetState(() {});
+                          }
+
+                          return CustomAlertDialog(
+                            title: Text(translate('custom_derp_map')),
+                            content: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(translate('custom_derp_map_hint'),
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: Theme.of(context).hintColor)),
+                                const SizedBox(height: 8),
+                                Text(translate('custom_derp_map_default_url'),
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: Theme.of(context).hintColor)),
+                                const SizedBox(height: 12),
+                                TextField(
+                                  controller: controller,
+                                  maxLines: 5,
+                                  minLines: 1,
+                                  style: const TextStyle(fontSize: 13),
+                                  decoration: InputDecoration(
+                                    isDense: true,
+                                    errorText: errMsg == null
+                                        ? null
+                                        : translate(errMsg!),
+                                  ),
+                                  onChanged: (_) {
+                                    if (errMsg != null) {
+                                      setState(() => errMsg = null);
+                                    }
+                                  },
+                                ),
+                              ],
+                            ),
+                            actions: [
+                              dialogButton('Cancel', onPressed: close),
+                              dialogButton('OK', onPressed: submit),
+                            ],
+                            onCancel: close,
+                          );
+                        });
+                      }),
           if (isAndroid && !outgoingOnly && !_isUsingPublicServer)
             SettingsTile.switchTile(
               title: Text(translate('Disable UDP')),

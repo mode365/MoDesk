@@ -1967,6 +1967,30 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
                         },
                 ),
               ),
+              // MoDesk DERP relay map: a hosted map URL (both peers fetch it)
+              // or a single inline region JSON (embedded in the server's
+              // tailcat address). Empty restores the tailcat default.
+              listTile(
+                icon: Icons.hub_outlined,
+                title: 'custom_derp_map',
+                showTooltip: true,
+                tooltipMessage: 'custom_derp_map_desc',
+                trailing: Text(
+                  () {
+                    final v = bind
+                        .mainGetOptionSync(key: kOptionCustomDerpMap)
+                        .trim();
+                    return v.isEmpty
+                        ? 'default'
+                        : (v.startsWith('http') ? v : 'inline');
+                  }(),
+                  style: const TextStyle(fontSize: 12),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                onTap: locked || isOptionFixed(kOptionCustomDerpMap)
+                    ? null
+                    : () => showDerpMapDialog(setState),
+              ),
               if (!isWeb)
                 futureBuilder(
                   future: bind.mainIsUsingPublicServer(),
@@ -3245,8 +3269,67 @@ class _ShortcutsConfigureRow extends StatelessWidget {
 
 //#region dialogs
 
-void changeSocks5Proxy() async {
-  var socks = await bind.mainGetSocks();
+void showDerpMapDialog(void Function(void Function()) parentSetState) async {
+  final current = bind.mainGetOptionSync(key: kOptionCustomDerpMap);
+  final controller = TextEditingController(text: current);
+  final isOptFixed = isOptionFixed(kOptionCustomDerpMap);
+  String? errMsg;
+
+  gFFI.dialogManager.show((setState, close, context) {
+    submit() async {
+      final v = controller.text.trim();
+      final err = validateDerpMapValue(v);
+      if (err != null) {
+        setState(() => errMsg = err);
+        return;
+      }
+      await bind.mainSetOption(key: kOptionCustomDerpMap, value: v);
+      close();
+      parentSetState(() {});
+    }
+    return CustomAlertDialog(
+      title: Text(translate('custom_derp_map')),
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(translate('custom_derp_map_hint'),
+              style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+          const SizedBox(height: 8),
+          Text(translate('custom_derp_map_default_url'),
+              style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+          const SizedBox(height: 12),
+          TextField(
+            controller: controller,
+            maxLines: 5,
+            minLines: 1,
+            enabled: !isOptFixed,
+            style: const TextStyle(fontSize: 13),
+            decoration: InputDecoration(
+              hintText: translate('custom_derp_map_hint'),
+              isDense: true,
+              errorText: errMsg == null ? null : translate(errMsg!),
+            ),
+            onChanged: (_) {
+              if (errMsg != null) setState(() => errMsg = null);
+            },
+          ),
+        ],
+      ),
+      actions: [
+        dialogButton('Cancel', onPressed: close, isOutline: true),
+        if (!isOptFixed)
+          dialogButton(
+            'OK',
+            onPressed: submit,
+          ),
+      ],
+      onCancel: close,
+    );
+  });
+}
+
+void changeSocks5Proxy() async {  var socks = await bind.mainGetSocks();
 
   String proxy = '';
   String proxyMsg = '';

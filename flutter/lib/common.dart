@@ -2595,6 +2595,65 @@ connectMainDesktop(String id,
   }
 }
 
+/// Validate a custom DERP map value (option [kOptionCustomDerpMap], shared by
+/// the desktop network settings and the mobile settings page). Accepted:
+///  - ''                       -> tailcat default map
+///  - 'http(s)://...'          -> hosted DERPMap URL (both peers fetch it)
+///  - single region JSON ('{"RegionID":..,"Nodes":[..]}') or a DERPMap
+///    JSON containing exactly one region -> embedded in the server address
+/// Returns an i18n error key, or null when valid.
+String? validateDerpMapValue(String v) {
+  v = v.trim();
+  if (v.isEmpty) return null;
+  if (v.startsWith('http://') || v.startsWith('https://')) {
+    final uri = Uri.tryParse(v);
+    if (uri == null || !uri.hasAbsolutePath || uri.host.isEmpty) {
+      return 'custom_derp_map_invalid_url';
+    }
+    return null;
+  }
+  if (v.startsWith('{')) {
+    try {
+      final j = jsonDecode(v);
+      String? errorIfRegion(Map<String, dynamic> m) {
+        if (m['RegionID'] is! int) return 'custom_derp_map_invalid_json';
+        final nodes = m['Nodes'];
+        if (nodes is! List || nodes.isEmpty) {
+          return 'custom_derp_map_invalid_json';
+        }
+        for (final n in nodes) {
+          if (n is! Map<String, dynamic> ||
+              !(n['HostName'] is String && (n['HostName'] as String).isNotEmpty)) {
+            return 'custom_derp_map_invalid_json';
+          }
+        }
+        return null;
+      }
+
+      if (j is Map<String, dynamic>) {
+        if (j.containsKey('RegionID') && j.containsKey('Nodes')) {
+          return errorIfRegion(j);
+        }
+        if (j.containsKey('Regions')) {
+          final regions = j['Regions'];
+          if (regions is Map<String, dynamic>) {
+            if (regions.isEmpty) return 'custom_derp_map_empty';
+            if (regions.length > 1) return 'custom_derp_map_multi_region';
+            final region = regions.values.first;
+            if (region is Map<String, dynamic>) {
+              return errorIfRegion(region);
+            }
+          }
+        }
+      }
+      return 'custom_derp_map_invalid_json';
+    } catch (_) {
+      return 'custom_derp_map_invalid_json';
+    }
+  }
+  return 'custom_derp_map_invalid';
+}
+
 /// Connect to a peer with [id].
 /// If [isFileTransfer], starts a session only for file transfer.
 /// If [isViewCamera], starts a session only for view camera.

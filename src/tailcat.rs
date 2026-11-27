@@ -44,6 +44,123 @@ use hbb_common::{anyhow::anyhow, bail, libloading::Library, log, ResultType};
 // Option keys shared with the Flutter side (flutter/lib/consts.dart).
 const OPT_TUNNEL_SWITCH: &str = "custom-mesh-tunnel";
 const OPT_TUNNEL_PROMPT: &str = "custom-mesh-tunnel-prompt";
+const OPT_DERPMAP: &str = "custom-derp-map";
+/// tailcat library default (tailcat.DefaultDERPMapURL).
+const DERPMAP_DEFAULT_URL: &str = "https://tailcat.dev/derpmap.json";
+
+/// Parsed `custom-derp-map` setting. The stored option is a single string:
+/// - empty                -> Default mode (the tailcat public map URL is passed explicitly
+///                           so behavior is identical on library versions predating the
+///                           default).
+/// - "http(s)://..."      -> URL mode: both sides fetch the map from that URL. Server picks
+///                           the nearest region; the client resolves the server's region_id
+///                           through the same map.
+/// - "{ ... }" JSON       -> Inline mode (A scheme): a single DERPRegion object. The server
+///                           embeds it in its tailcat address so the controlling side needs
+///                           no map at all.
+/// Anything else is invalid; callers fall back to Default.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum DerpMapSource {
+    Default,
+    Url(String),
+    Region(String),
+}
+
+impl DerpMapSource {
+    /// Read and parse the option. Invalid content is logged and falls back to
+    /// Default (the tunnel must keep working after a bad paste), and the
+    /// effective config never silently changes because of a parse error.
+    fn from_config() -> Self {
+        let raw = hbb_common::config::Config::get_option(OPT_DERPMAP).trim().to_string();
+        Self::parse(&raw)
+    }
+
+    fn parse(raw: &str) -> Self {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Self::Default;
+        }
+        if raw.starts_with("http://") || raw.starts_with("https://") {
+            return Self::Url(raw.to_string());
+        }
+        if raw.starts_with('{') {
+            return match serde_json::from_str::<serde_json::Value>(raw) {
+                Ok(v) => {
+                    if v.get("RegionID").is_some() && v.get("Nodes").is_some() {
+                        // Re-serialize so compare-by-string stays stable
+                        // regardless of the user's formatting.
+                        Self::Region(v.to_string())
+                    } else if v.get("Regions").is_some() {
+                        // A full DERPMap with only multiple regions cannot be
+                        // inlined (a tailcat address carries at most one
+                        // region); require the URL mode for that.
+                        let count = v
+                            .get("Regions")
+                            .and_then(|r| r.as_object())
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                        if count == 1 {
+                            let region = v
+                                .get("Regions")
+                                .and_then(|r| r.as_object())
+                                .and_then(|m| m.values().next())
+                                .map(|rv| rv.to_string())
+                                .unwrap_or_default();
+                            if !region.is_empty() {
+                                Self::Region(region)
+                            } else {
+                                log::warn!("{}: malformed region in map, falling back to default", OPT_DERPMAP);
+                                Self::Default
+                            }
+                        } else {
+                            log::warn!(
+                                "{}: full map with {} regions is not inlinable; use a hosted URL instead",
+                                OPT_DERPMAP, count
+                            );
+                            Self::Default
+                        }
+                    } else {
+                        log::warn!("{}: JSON is neither a region nor a DERPMap, falling back to default", OPT_DERPMAP);
+                        Self::Default
+                    }
+                }
+                Err(e) => {
+                    log::warn!("{}: JSON parse failed ({:?}), falling back to default", OPT_DERPMAP, e);
+                    Self::Default
+                }
+            };
+        }
+        log::warn!("{}: unrecognized value, falling back to default", OPT_DERPMAP);
+        Self::Default
+    }
+
+    /// Server-side config (tc_server_new). The inline region takes precedence
+    /// (it also shortens the client path); otherwise pass the map URL.
+    fn server_config(&self) -> serde_json::Value {
+        match self {
+            Self::Default => serde_json::json!({ "derp_map_url": DERPMAP_DEFAULT_URL }),
+            Self::Url(u) => serde_json::json!({ "derp_map_url": u }),
+            Self::Region(r) => serde_json::json!({ "region": serde_json::from_str::<serde_json::Value>(r).unwrap_or(serde_json::Value::Null) }),
+        }
+    }
+
+    /// Client-side config (tc_client_new). Inline regions ride inside the
+    /// peer's tailcat address, so the client needs nothing; otherwise both
+    /// peers must resolve regions through the same map.
+    fn client_config(address: &str) -> serde_json::Value {
+        // Look at the current option only for URL mode; region mode configures
+        // the server side only. Default is passed explicitly to keep library
+        // versions without a built-in default working.
+        let src = Self::from_config();
+        match src {
+            Self::Default => serde_json::json!({ "address": address, "derp_map_url": DERPMAP_DEFAULT_URL }),
+            Self::Url(u) => serde_json::json!({ "address": address, "derp_map_url": u }),
+            // Even in region mode the client could still resolve the peer
+            // address without a map; pass the default URL for safety.
+            Self::Region(_) => serde_json::json!({ "address": address, "derp_map_url": DERPMAP_DEFAULT_URL }),
+        }
+    }
+}
 
 // Per-connection encrypt/direct decision. Kept in a process-local static on
 // purpose: option storage is shared with the service process and can be
@@ -360,15 +477,18 @@ struct TunnelServe {
     server: TcHandle,
     addr: String,
     port: u16,
+    /// derp map config the server was created with; a change here forces a
+    /// rebuild on the next ensure call.
+    derp: DerpMapSource,
     stop: Arc<AtomicBool>,
 }
 
 impl TunnelServe {
-    fn start(lib: &'static TcLib, port: u16) -> ResultType<Self> {
+    fn start(lib: &'static TcLib, port: u16, derp: &DerpMapSource) -> ResultType<Self> {
         let mut err: *mut c_char = ptr::null_mut();
         let token = unsafe { token_new(lib, OP_TIMEOUT_SECS) }?;
         let mut server: TcHandle = 0;
-        let cfg = CString::new("{}")?;
+        let cfg = CString::new(derp.server_config().to_string())?;
         let code = unsafe { (lib.server_new)(cfg.as_ptr(), &mut server, &mut err) };
         unsafe { tc_check(lib, code, err) }?;
         let mut listener: TcHandle = 0;
@@ -411,6 +531,7 @@ impl TunnelServe {
             server,
             addr,
             port,
+            derp: derp.clone(),
             stop,
         })
     }
@@ -526,28 +647,32 @@ fn serve_last_start() -> &'static Mutex<Option<Instant>> {
 }
 
 /// Ensure a serve tunnel is running for `port`; returns its tailcat address.
-/// Restarts the tunnel if `port` changed (the direct-access listen port is
-/// configurable). Returns None when the library is missing or the tunnel
-/// cannot be established (caller falls back to the normal path).
+/// Restarts the tunnel if `port` or the derp map setting changed (the
+/// direct-access listen port is configurable, and the map switch must take
+/// effect without an app restart). The 15s restart cooldown is bypassed for
+/// deliberate config changes so the new map is used on the next connection.
+/// Returns None when the library is missing or the tunnel cannot be
+/// established (caller falls back to the normal path).
 pub fn ensure_tunnel_serve(port: u16) -> Option<String> {
     let mut guard = serve_slot().lock().ok()?;
+    let derp = DerpMapSource::from_config();
     if let Some(s) = guard.as_ref() {
-        if s.port == port {
+        if s.port == port && s.derp == derp {
             return Some(s.addr.clone());
         }
     }
     if let Some(last) = *serve_last_start().lock().ok()? {
-        if last.elapsed() < SERVE_RESTART_COOLDOWN {
+        if last.elapsed() < SERVE_RESTART_COOLDOWN && guard.as_ref().map(|s| &s.derp) == Some(&derp) {
             return None;
         }
     }
     if let Ok(mut last) = serve_last_start().lock() {
         *last = Some(Instant::now());
     }
-    // A different port: drop the old serve (Drop closes the server).
+    // Different port or map: drop the old serve (Drop closes the server).
     *guard = None;
     let lib = tc()?;
-    match TunnelServe::start(lib, port) {
+    match TunnelServe::start(lib, port, &derp) {
         Ok(t) => {
             let addr = t.addr.clone();
             *guard = Some(t);
@@ -574,6 +699,10 @@ struct TunnelForward {
     local_port: u16,
     addr: String,
     remote_port: u16,
+    /// derp map URL the client was created with; map edits must rebuild the
+    /// forward on the next ensure call (the inline-region mode needs nothing
+    /// here, the region rides inside the peer address).
+    derp_url: Option<String>,
     /// Cleared by the accept loop when the local listener dies; the next
     /// ensure call then rebuilds the whole forward.
     alive: Arc<AtomicBool>,
@@ -581,7 +710,9 @@ struct TunnelForward {
 
 impl TunnelForward {
     fn start(lib: &'static TcLib, addr: &str, remote_port: u16) -> ResultType<Self> {
-        let cfg = CString::new(serde_json::json!({ "address": addr }).to_string())?;
+        let cfg_json = DerpMapSource::client_config(addr);
+        let derp_url = cfg_json.get("derp_map_url").and_then(|v| v.as_str()).map(str::to_string);
+        let cfg = CString::new(cfg_json.to_string())?;
         let mut client: TcHandle = 0;
         let mut err: *mut c_char = ptr::null_mut();
         let code = unsafe { (lib.client_new)(cfg.as_ptr(), &mut client, &mut err) };
@@ -600,6 +731,7 @@ impl TunnelForward {
             local_port,
             addr: addr.to_owned(),
             remote_port,
+            derp_url,
             alive,
         })
     }
@@ -656,10 +788,20 @@ fn forward_slot() -> &'static Mutex<Option<TunnelForward>> {
 /// local port for the session to connect to. The forward outlives a single
 /// session and is reused while it matches (the peer's address is stable
 /// while its serve tunnel lives), so reconnects skip the DERP round trip.
+/// A change of the derp map URL setting also forces a rebuild, so map edits
+/// take effect for the next session without an app restart.
 pub fn ensure_tunnel_forward(addr: &str, remote_port: u16) -> Option<u16> {
     let mut guard = forward_slot().lock().ok()?;
+    let want_url = match DerpMapSource::from_config() {
+        DerpMapSource::Url(u) => Some(u),
+        _ => Some(DERPMAP_DEFAULT_URL.to_string()),
+    };
     if let Some(f) = guard.as_ref() {
-        if f.addr == addr && f.remote_port == remote_port && f.alive.load(Ordering::SeqCst) {
+        if f.addr == addr
+            && f.remote_port == remote_port
+            && f.derp_url == want_url
+            && f.alive.load(Ordering::SeqCst)
+        {
             return Some(f.local_port);
         }
     }
@@ -1067,6 +1209,70 @@ mod tests {
         stop_tunnel_serve();
         if let Some(f) = forward_slot().lock().unwrap().take() {
             drop(f);
+        }
+    }
+
+    /// DerpMapSource::parse decides which serve/forward config the tunnel uses;
+    /// bad user input must fall back to Default instead of breaking the tunnel.
+    #[test]
+    fn derp_map_source_parse() {
+        use super::DerpMapSource as D;
+
+        // empty / whitespace -> Default
+        assert_eq!(D::parse(""), D::Default);
+        assert_eq!(D::parse("   \n\t "), D::Default);
+
+        // URLs
+        assert_eq!(
+            D::parse("https://tailcat.dev/derpmap.json"),
+            D::Url("https://tailcat.dev/derpmap.json".into())
+        );
+        assert_eq!(
+            D::parse("  https://static.example.com/tailcat/derpmap.json\n"),
+            D::Url("https://static.example.com/tailcat/derpmap.json".into())
+        );
+        assert_eq!(D::parse("http://insecure.example.com/m.json"), D::Url("http://insecure.example.com/m.json".into()));
+
+        // single region object (A scheme inline)
+        let region = r#"{"RegionID":900,"RegionCode":"cn-modesk","RegionName":"MoDesk China Relay","Nodes":[{"Name":"900a","RegionID":900,"HostName":"1.92.70.134","IPv4":"1.92.70.134","DERPPort":9347,"STUNPort":3478,"CertName":"sha256-raw:abc"}]}"#;
+        match D::parse(region) {
+            D::Region(r) => {
+                let v: serde_json::Value = serde_json::from_str(&r).unwrap();
+                assert_eq!(v["RegionID"], 900);
+                assert_eq!(v["Nodes"][0]["HostName"], "1.92.70.134");
+            }
+            other => panic!("expected Region, got {:?}", other),
+        }
+
+        // full map with exactly one region -> unwrap to that region
+        let map1 = r#"{"Regions":{"900":{"RegionID":900,"RegionCode":"cn","Nodes":[{"Name":"900a","RegionID":900,"HostName":"1.2.3.4"}]}}}"#;
+        match D::parse(map1) {
+            D::Region(r) => {
+                let v: serde_json::Value = serde_json::from_str(&r).unwrap();
+                assert_eq!(v["RegionID"], 900);
+            }
+            other => panic!("expected Region from single-region map, got {:?}", other),
+        }
+
+        // full map with two regions -> not inlinable, Default (use URL mode)
+        let map2 = r#"{"Regions":{"900":{"RegionID":900,"Nodes":[{"Name":"900a","RegionID":900,"HostName":"1.2.3.4"}]},"901":{"RegionID":901,"Nodes":[{"Name":"901a","RegionID":901,"HostName":"5.6.7.8"}]}}}"#;
+        assert_eq!(D::parse(map2), D::Default);
+
+        // malformed / nonsense -> Default
+        assert_eq!(D::parse("not a url or json"), D::Default);
+        assert_eq!(D::parse("{broken json"), D::Default);
+        assert_eq!(D::parse(r#"{"foo":1}"#), D::Default);
+
+        // config building
+        let d = D::Default;
+        assert_eq!(d.server_config()["derp_map_url"], "https://tailcat.dev/derpmap.json");
+        assert_eq!(D::client_config("tcabc")["derp_map_url"], "https://tailcat.dev/derpmap.json");
+        match D::parse("https://m.example.com/x.json") {
+            D::Url(u) => assert_eq!(
+                D::Url(u).server_config()["derp_map_url"],
+                "https://m.example.com/x.json"
+            ),
+            other => panic!("expected Url, got {:?}", other),
         }
     }
 }

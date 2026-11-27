@@ -204,6 +204,9 @@ const String kOptionEnableFlutterHttpOnRust = "enable-flutter-http-on-rust";
 const String kOptionCustomMeshTunnel = "custom-mesh-tunnel";
 const String kOptionCustomMeshTunnelPrompt = "custom-mesh-tunnel-prompt";
 const String kOptionMeshTunnelPending = "mesh-tunnel-pending";
+const String kOptionCustomDerpMap = "custom-derp-map";
+// tailcat's default DERP map; also the fallback shown when the option is empty.
+const String kDefaultDerpMapUrl = "https://tailcat.dev/derpmap.json";
 
 // builtin options
 const String kOptionHideServerSetting = "hide-server-settings";
