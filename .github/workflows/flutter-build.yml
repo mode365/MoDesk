@@ -366,7 +366,7 @@ jobs:
             if (Test-Path $diag) { Remove-Item -Recurse -Force $diag }
             Copy-Item -Recurse (Join-Path (go env GOMODCACHE) 'github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436') $diag
             Get-ChildItem $diag -Recurse -File | ForEach-Object { $_.IsReadOnly = $false }
-            git -C $diag apply -p2 "$env:GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch"
+            git -C $diag apply -p2 --ignore-whitespace "$env:GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch"
             if ($LASTEXITCODE -ne 0) { throw 'tailcat diag patch failed' }
             go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             $env:CGO_ENABLED = '1'
@@ -1246,7 +1246,7 @@ jobs:
             rm -rf tailcat-diag
             cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
             chmod -R u+w tailcat-diag
-            ( cd tailcat-diag && git apply -p2 "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+            ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
             go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.job.arch == 'aarch64' && 'arm64' || 'amd64' }} \
               go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" \
@@ -1790,7 +1790,7 @@ jobs:
             rm -rf tailcat-diag
             cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
             chmod -R u+w tailcat-diag
-            ( cd tailcat-diag && git apply -p2 "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+            ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
             go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             case ${{ matrix.job.target }} in
               aarch64-linux-android)   TAILCAT_ABI=arm64-v8a;   TAILCAT_GOARCH=arm64; TAILCAT_TRIPLE=aarch64-linux-android21 ;;
@@ -2033,7 +2033,7 @@ jobs:
             rm -rf tailcat-diag
             cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
             chmod -R u+w tailcat-diag
-            ( cd tailcat-diag && git apply -p2 "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+            ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
             go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             for spec in \
               "arm64-v8a arm64 aarch64-linux-android21" \
@@ -2266,7 +2266,7 @@ jobs:
           rm -rf tailcat-diag
           cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
           chmod -R u+w tailcat-diag
-          ( cd tailcat-diag && git apply -p2 "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+          ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
           go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
           CGO_ENABLED=1 go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" \
             -o "${GITHUB_WORKSPACE}/res/tailcat/libtailcat.so" github.com/tailscale/tailcat/cmd/libtailcat

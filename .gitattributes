@@ -1,1 +1,4 @@
 * text=auto
+
+# Patch files must stay byte-exact (git apply context matching); disable any EOL conversion
+patches/** -text
