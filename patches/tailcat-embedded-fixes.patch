@@ -1,0 +1,167 @@
+diff --git a/a/internal/capi/api.go b/b/internal/capi/api.go
+index e14a883..880f240 100644
+--- a/a/internal/capi/api.go
++++ b/b/internal/capi/api.go
+@@ -6,9 +6,13 @@ package capi
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net"
++	"net/netip"
++	"os"
++	"runtime"
+ 	"runtime/debug"
+ 	"strings"
+ 	"sync"
+@@ -16,6 +20,8 @@ import (
+ 	"time"
+ 
+ 	"github.com/tailscale/tailcat"
++	"tailscale.com/feature"
++	"tailscale.com/net/netmon"
+ 	"tailscale.com/tailcfg"
+ 	"tailscale.com/types/key"
+ 	"tailscale.com/types/logger"
+@@ -25,10 +31,37 @@ const ABIVersion = 1
+ const TCP = 1
+ const UDP = 2
+ 
++// Android netmon fallback -- diagnostic/local patch, not in upstream tailcat.
++//
++// libtailcat is a GOOS=android cgo c-shared build, and that combination is
++// exactly the one tailcat's own feature/androidbin package excludes from
++// compilation (feature/androidbin/register.go builds only on
++// (linux && !android) || (android && !cgo): official Android apps register a
++// Java-backed interface getter instead). Embedded via dlopen we have no
++// Java, so nothing registers HookInterfacesFallback, and Android app UIDs
++// cannot open NETLINK_ROUTE sockets, so net.Interfaces() fails with
++// "route ip+net: netlinkrib: permission denied" on every call. Every
++// magicsock endpoint update died there, netcheck always reported udp=false,
++// no local or STUN endpoints were ever collected, and P2P was impossible --
++// mesh sessions could only ride the DERP relay. Register tailcat's own
++// synthetic-interface fallback (asking the kernel to route UDP sockets,
++// which needs no privileges) the way androidbin would have. Windows and
++// Linux are untouched: the hook runs only when net.Interfaces already
++// failed, which does not happen there.
++func init() {
++	if runtime.GOOS == "android" && feature.Register("libtailcat-android-netmon") {
++		netmon.HookInterfacesFallback.Set(syntheticInterfaces)
++	}
++}
++
+ type ClientConfig struct {
+ 	Address    string `json:"address"`
+ 	Key        string `json:"key,omitempty"`
+ 	DERPMapURL string `json:"derp_map_url,omitempty"`
++	// LogFile, when set, turns the discarded internal logs (netcheck,
++	// disco, magicsock) into a file the embedding app can collect.
++	// Diagnostic patch -- not in upstream tailcat.
++	LogFile string `json:"log_file,omitempty"`
+ }
+ 
+ type ServerConfig struct {
+@@ -39,6 +72,8 @@ type ServerConfig struct {
+ 	DERPMapURL     string               `json:"derp_map_url,omitempty"`
+ 	AllowedClients []string             `json:"allowed_clients,omitempty"`
+ 	UDPIdleTimeout float64              `json:"udp_idle_timeout,omitempty"`
++	// LogFile: see ClientConfig.LogFile.
++	LogFile string `json:"log_file,omitempty"`
+ }
+ 
+ // ready records a successful first operation; DrainTCP is only valid afterwards.
+@@ -212,6 +247,74 @@ func decode(config string, target any) error {
+ 	return nil
+ }
+ 
++// syntheticInterfaces mirrors feature/androidbin's buildSynthetic: a single
++// made-up interface carrying the process's outbound IPv4/IPv6 source
++// addresses, discovered by opening (never sending on) UDP sockets.
++func syntheticInterfaces() ([]netmon.Interface, error) {
++	var addrs []net.Addr
++	if ip, ok := outboundIP("udp4", "8.8.8.8:53"); ok {
++		addrs = append(addrs, &net.IPNet{IP: ip.AsSlice(), Mask: net.CIDRMask(32, 32)})
++	}
++	if ip, ok := outboundIP("udp6", "[2001:4860:4860::8888]:53"); ok {
++		addrs = append(addrs, &net.IPNet{IP: ip.AsSlice(), Mask: net.CIDRMask(128, 128)})
++	}
++	if len(addrs) == 0 {
++		return nil, errors.New("libtailcat: no outbound routes found")
++	}
++	return []netmon.Interface{{
++		Interface: &net.Interface{
++			MTU:   1500,
++			Name:  "android",
++			Flags: net.FlagUp | net.FlagRunning,
++		},
++		AltAddrs: addrs,
++	}}, nil
++}
++
++// outboundIP reports the local source address the kernel picks for an
++// outbound socket to addr. Dialing UDP performs no I/O, so this works under
++// Android's app sandbox where interface enumeration does not.
++func outboundIP(network, addr string) (netip.Addr, bool) {
++	d := net.Dialer{Timeout: 2 * time.Second}
++	c, err := d.Dial(network, addr)
++	if err != nil {
++		return netip.Addr{}, false
++	}
++	defer c.Close()
++	ua, ok := c.LocalAddr().(*net.UDPAddr)
++	if !ok {
++		return netip.Addr{}, false
++	}
++	ip, ok := netip.AddrFromSlice(ua.IP)
++	if !ok {
++		return netip.Addr{}, false
++	}
++	ip = ip.Unmap()
++	if ip.IsLoopback() || ip.IsUnspecified() {
++		return netip.Addr{}, false
++	}
++	return ip, true
++}
++
++// logfFor returns a logger writing to path (one timestamped line per call),
++// or logger.Discard when path is empty or cannot be opened. Upstream tailcat
++// discards all internal logs; this diagnostic patch makes the internals
++// (netcheck, disco, magicsock) observable from the embedding app.
++func logfFor(path string) logger.Logf {
++	if path == "" {
++		return logger.Discard
++	}
++	w, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
++	if err != nil {
++		return logger.Discard
++	}
++	logf := func(format string, args ...any) {
++		fmt.Fprintf(w, time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")+" "+format+"\n", args...)
++	}
++	logf("tailcat diag logging enabled (patched build)")
++	return logf
++}
++
+ func nodeKey(text string) (key.NodePrivate, error) {
+ 	if text == "" {
+ 		return key.NewNode(), nil
+@@ -236,7 +339,7 @@ func NewClient(config string) (Handle, error) {
+ 	if err != nil {
+ 		return 0, err
+ 	}
+-	return register(&client{client: &tailcat.Client{Server: tailcat.Addr(cfg.Address), Key: k, DERPMapURL: cfg.DERPMapURL, Logf: logger.Discard}}, 0)
++	return register(&client{client: &tailcat.Client{Server: tailcat.Addr(cfg.Address), Key: k, DERPMapURL: cfg.DERPMapURL, Logf: logfFor(cfg.LogFile)}}, 0)
+ }
+ 
+ func NewServer(config string) (Handle, error) {
+@@ -257,7 +360,7 @@ func NewServer(config string) (Handle, error) {
+ 	if cfg.UDPIdleTimeout < 0 || cfg.UDPIdleTimeout >= float64(int64(^uint64(0)>>1))/float64(time.Second) {
+ 		return 0, fmt.Errorf("%w: invalid UDP idle timeout", ErrArgument)
+ 	}
+-	s := &tailcat.Server{Key: k, PresharedKey: psk, Region: cfg.Region, RegionID: cfg.RegionID, DERPMapURL: cfg.DERPMapURL, Logf: logger.Discard, UDPIdleTimeout: time.Duration(cfg.UDPIdleTimeout * float64(time.Second))}
++	s := &tailcat.Server{Key: k, PresharedKey: psk, Region: cfg.Region, RegionID: cfg.RegionID, DERPMapURL: cfg.DERPMapURL, Logf: logfFor(cfg.LogFile), UDPIdleTimeout: time.Duration(cfg.UDPIdleTimeout * float64(time.Second))}
+ 	srv := &server{server: s, gate: newGate()}
+ 	s.AllowClient = srv.allowClient
+ 	for _, text := range cfg.AllowedClients {

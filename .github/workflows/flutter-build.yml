@@ -58,8 +58,8 @@ env:
   # gen_version() (libs/hbb_common, src/version.rs is generated per build)
   # reads MODESK_VERSION so the binary reports the test version while
   # Cargo.toml stays the official semver.
-  VERSION: "1.5.3.test3"
-  MODESK_VERSION: "1.5.3.test3"
+  VERSION: "1.5.3.test4"
+  MODESK_VERSION: "1.5.3.test4"
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
@@ -359,14 +359,14 @@ jobs:
             go mod init tcbuild | Out-Null
             go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
             # Diagnostic build: patch the tailcat module (internal log-file
-            # support, patches/tailcat-diag-logging.patch) and build from the
+            # support, patches/tailcat-embedded-fixes.patch) and build from the
             # patched copy instead of the pin. The Rust side always passes
             # "log_file"; upstream's strict decoder would reject it.
             $diag = Join-Path (Get-Location) 'tailcat-diag'
             if (Test-Path $diag) { Remove-Item -Recurse -Force $diag }
             Copy-Item -Recurse (Join-Path (go env GOMODCACHE) 'github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436') $diag
             Get-ChildItem $diag -Recurse -File | ForEach-Object { $_.IsReadOnly = $false }
-            git -C $diag apply -p2 --ignore-whitespace "$env:GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch"
+            git -C $diag apply -p2 --ignore-whitespace "$env:GITHUB_WORKSPACE/patches/tailcat-embedded-fixes.patch"
             if ($LASTEXITCODE -ne 0) { throw 'tailcat diag patch failed' }
             go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             $env:CGO_ENABLED = '1'
@@ -1240,13 +1240,13 @@ jobs:
             go mod init tcbuild
             go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
             # Diagnostic build: patch the tailcat module (internal log-file
-            # support, patches/tailcat-diag-logging.patch) and build from the
+            # support, patches/tailcat-embedded-fixes.patch) and build from the
             # patched copy instead of the pin. The Rust side always passes
             # "log_file"; upstream's strict decoder would reject it.
             rm -rf tailcat-diag
             cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
             chmod -R u+w tailcat-diag
-            ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+            ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-embedded-fixes.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
             go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.job.arch == 'aarch64' && 'arm64' || 'amd64' }} \
               go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" \
@@ -1784,13 +1784,13 @@ jobs:
             go mod init tcbuild
             go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
             # Diagnostic build: patch the tailcat module (internal log-file
-            # support, patches/tailcat-diag-logging.patch) and build from the
+            # support, patches/tailcat-embedded-fixes.patch) and build from the
             # patched copy instead of the pin. The Rust side always passes
             # "log_file"; upstream's strict decoder would reject it.
             rm -rf tailcat-diag
             cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
             chmod -R u+w tailcat-diag
-            ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+            ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-embedded-fixes.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
             go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             case ${{ matrix.job.target }} in
               aarch64-linux-android)   TAILCAT_ABI=arm64-v8a;   TAILCAT_GOARCH=arm64; TAILCAT_TRIPLE=aarch64-linux-android21 ;;
@@ -2027,13 +2027,13 @@ jobs:
             go mod init tcbuild
             go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
             # Diagnostic build: patch the tailcat module (internal log-file
-            # support, patches/tailcat-diag-logging.patch) and build from the
+            # support, patches/tailcat-embedded-fixes.patch) and build from the
             # patched copy instead of the pin. The Rust side always passes
             # "log_file"; upstream's strict decoder would reject it.
             rm -rf tailcat-diag
             cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
             chmod -R u+w tailcat-diag
-            ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+            ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-embedded-fixes.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
             go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             for spec in \
               "arm64-v8a arm64 aarch64-linux-android21" \
@@ -2260,13 +2260,13 @@ jobs:
           go mod init tcbuild
           go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
           # Diagnostic build: patch the tailcat module (internal log-file
-          # support, patches/tailcat-diag-logging.patch) and build from the
+          # support, patches/tailcat-embedded-fixes.patch) and build from the
           # patched copy instead of the pin. The Rust side always passes
           # "log_file"; upstream's strict decoder would reject it.
           rm -rf tailcat-diag
           cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
           chmod -R u+w tailcat-diag
-          ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+          ( cd tailcat-diag && git apply -p2 --ignore-whitespace "$GITHUB_WORKSPACE/patches/tailcat-embedded-fixes.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
           go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
           CGO_ENABLED=1 go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" \
             -o "${GITHUB_WORKSPACE}/res/tailcat/libtailcat.so" github.com/tailscale/tailcat/cmd/libtailcat
