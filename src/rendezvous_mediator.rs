@@ -889,6 +889,15 @@ impl RendezvousMediator {
         let local_addr: SocketAddr =
             format!("{}:{}", local_addr.ip(), local_addr.port()).parse()?;
         let mut msg_out = Message::new();
+        // MoDesk mesh tunnel: advertise the serve tunnel on the LAN path too.
+        // The intranet path is used whenever the controller sits behind the
+        // same public IP as us (e.g. two phones on one home WiFi), and the
+        // rendezvous server rebuilds its punch reply from this message -- so
+        // without these fields an encrypted same-LAN session would report
+        // "peer has no tunnel" even though the tunnel is up.
+        let (tailcat_addr, tailcat_port) = crate::tailcat::current_serve_addr()
+            .map(|(a, p)| (a, p as i32))
+            .unwrap_or_default();
         msg_out.set_local_addr(LocalAddr {
             id: Config::get_id(),
             socket_addr: AddrMangle::encode(peer_addr).into(),
@@ -896,6 +905,8 @@ impl RendezvousMediator {
             relay_server,
             version: crate::VERSION.to_owned(),
             socket_addr_v6,
+            tailcat_addr,
+            tailcat_port,
             ..Default::default()
         });
         let bytes = msg_out.write_to_bytes()?;
