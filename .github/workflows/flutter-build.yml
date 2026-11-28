@@ -58,8 +58,8 @@ env:
   # gen_version() (libs/hbb_common, src/version.rs is generated per build)
   # reads MODESK_VERSION so the binary reports the test version while
   # Cargo.toml stays the official semver.
-  VERSION: "1.5.3.test1"
-  MODESK_VERSION: "1.5.3.test1"
+  VERSION: "1.5.3.test2"
+  MODESK_VERSION: "1.5.3.test2"
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
