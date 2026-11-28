@@ -1,0 +1,76 @@
+diff --git a/a/internal/capi/api.go b/b/internal/capi/api.go
+index e14a883..8dfe553 100644
+--- a/a/internal/capi/api.go
++++ b/b/internal/capi/api.go
+@@ -9,6 +9,7 @@ import (
+ 	"fmt"
+ 	"io"
+ 	"net"
++	"os"
+ 	"runtime/debug"
+ 	"strings"
+ 	"sync"
+@@ -29,6 +30,10 @@ type ClientConfig struct {
+ 	Address    string `json:"address"`
+ 	Key        string `json:"key,omitempty"`
+ 	DERPMapURL string `json:"derp_map_url,omitempty"`
++	// LogFile, when set, turns the discarded internal logs (netcheck,
++	// disco, magicsock) into a file the embedding app can collect.
++	// Diagnostic patch -- not in upstream tailcat.
++	LogFile string `json:"log_file,omitempty"`
+ }
+ 
+ type ServerConfig struct {
+@@ -39,6 +44,8 @@ type ServerConfig struct {
+ 	DERPMapURL     string               `json:"derp_map_url,omitempty"`
+ 	AllowedClients []string             `json:"allowed_clients,omitempty"`
+ 	UDPIdleTimeout float64              `json:"udp_idle_timeout,omitempty"`
++	// LogFile: see ClientConfig.LogFile.
++	LogFile string `json:"log_file,omitempty"`
+ }
+ 
+ // ready records a successful first operation; DrainTCP is only valid afterwards.
+@@ -212,6 +219,25 @@ func decode(config string, target any) error {
+ 	return nil
+ }
+ 
++// logfFor returns a logger writing to path (one timestamped line per call),
++// or logger.Discard when path is empty or cannot be opened. Upstream tailcat
++// discards all internal logs; this diagnostic patch makes the internals
++// (netcheck, disco, magicsock) observable from the embedding app.
++func logfFor(path string) logger.Logf {
++	if path == "" {
++		return logger.Discard
++	}
++	w, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
++	if err != nil {
++		return logger.Discard
++	}
++	logf := func(format string, args ...any) {
++		fmt.Fprintf(w, time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")+" "+format+"\n", args...)
++	}
++	logf("tailcat diag logging enabled (patched build)")
++	return logf
++}
++
+ func nodeKey(text string) (key.NodePrivate, error) {
+ 	if text == "" {
+ 		return key.NewNode(), nil
+@@ -236,7 +262,7 @@ func NewClient(config string) (Handle, error) {
+ 	if err != nil {
+ 		return 0, err
+ 	}
+-	return register(&client{client: &tailcat.Client{Server: tailcat.Addr(cfg.Address), Key: k, DERPMapURL: cfg.DERPMapURL, Logf: logger.Discard}}, 0)
++	return register(&client{client: &tailcat.Client{Server: tailcat.Addr(cfg.Address), Key: k, DERPMapURL: cfg.DERPMapURL, Logf: logfFor(cfg.LogFile)}}, 0)
+ }
+ 
+ func NewServer(config string) (Handle, error) {
+@@ -257,7 +283,7 @@ func NewServer(config string) (Handle, error) {
+ 	if cfg.UDPIdleTimeout < 0 || cfg.UDPIdleTimeout >= float64(int64(^uint64(0)>>1))/float64(time.Second) {
+ 		return 0, fmt.Errorf("%w: invalid UDP idle timeout", ErrArgument)
+ 	}
+-	s := &tailcat.Server{Key: k, PresharedKey: psk, Region: cfg.Region, RegionID: cfg.RegionID, DERPMapURL: cfg.DERPMapURL, Logf: logger.Discard, UDPIdleTimeout: time.Duration(cfg.UDPIdleTimeout * float64(time.Second))}
++	s := &tailcat.Server{Key: k, PresharedKey: psk, Region: cfg.Region, RegionID: cfg.RegionID, DERPMapURL: cfg.DERPMapURL, Logf: logfFor(cfg.LogFile), UDPIdleTimeout: time.Duration(cfg.UDPIdleTimeout * float64(time.Second))}
+ 	srv := &server{server: s, gate: newGate()}
+ 	s.AllowClient = srv.allowClient
+ 	for _, text := range cfg.AllowedClients {

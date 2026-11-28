@@ -58,8 +58,8 @@ env:
   # gen_version() (libs/hbb_common, src/version.rs is generated per build)
   # reads MODESK_VERSION so the binary reports the test version while
   # Cargo.toml stays the official semver.
-  VERSION: "1.5.3.test2"
-  MODESK_VERSION: "1.5.3.test2"
+  VERSION: "1.5.3.test3"
+  MODESK_VERSION: "1.5.3.test3"
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
@@ -358,6 +358,17 @@ jobs:
           try {
             go mod init tcbuild | Out-Null
             go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
+            # Diagnostic build: patch the tailcat module (internal log-file
+            # support, patches/tailcat-diag-logging.patch) and build from the
+            # patched copy instead of the pin. The Rust side always passes
+            # "log_file"; upstream's strict decoder would reject it.
+            $diag = Join-Path (Get-Location) 'tailcat-diag'
+            if (Test-Path $diag) { Remove-Item -Recurse -Force $diag }
+            Copy-Item -Recurse (Join-Path (go env GOMODCACHE) 'github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436') $diag
+            Get-ChildItem $diag -Recurse -File | ForEach-Object { $_.IsReadOnly = $false }
+            git -C $diag apply -p2 "$env:GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch"
+            if ($LASTEXITCODE -ne 0) { throw 'tailcat diag patch failed' }
+            go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             $env:CGO_ENABLED = '1'
             if ('${{ matrix.job.arch }}' -eq 'x86_64') {
               # MinGW gcc (bundled with the windows runners) is the toolchain
@@ -1228,6 +1239,15 @@ jobs:
             cd "$tc"
             go mod init tcbuild
             go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
+            # Diagnostic build: patch the tailcat module (internal log-file
+            # support, patches/tailcat-diag-logging.patch) and build from the
+            # patched copy instead of the pin. The Rust side always passes
+            # "log_file"; upstream's strict decoder would reject it.
+            rm -rf tailcat-diag
+            cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
+            chmod -R u+w tailcat-diag
+            ( cd tailcat-diag && git apply -p2 "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+            go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.job.arch == 'aarch64' && 'arm64' || 'amd64' }} \
               go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" \
                 -o libtailcat.dylib github.com/tailscale/tailcat/cmd/libtailcat
@@ -1763,6 +1783,15 @@ jobs:
             mkdir -p "${RUNNER_TEMP}/tcbuild" && cd "${RUNNER_TEMP}/tcbuild"
             go mod init tcbuild
             go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
+            # Diagnostic build: patch the tailcat module (internal log-file
+            # support, patches/tailcat-diag-logging.patch) and build from the
+            # patched copy instead of the pin. The Rust side always passes
+            # "log_file"; upstream's strict decoder would reject it.
+            rm -rf tailcat-diag
+            cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
+            chmod -R u+w tailcat-diag
+            ( cd tailcat-diag && git apply -p2 "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+            go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             case ${{ matrix.job.target }} in
               aarch64-linux-android)   TAILCAT_ABI=arm64-v8a;   TAILCAT_GOARCH=arm64; TAILCAT_TRIPLE=aarch64-linux-android21 ;;
               armv7-linux-androideabi) TAILCAT_ABI=armeabi-v7a; TAILCAT_GOARCH=arm;   TAILCAT_TRIPLE=armv7a-linux-androideabi21 ;;
@@ -1997,6 +2026,15 @@ jobs:
             mkdir -p "${RUNNER_TEMP}/tcbuild" && cd "${RUNNER_TEMP}/tcbuild"
             go mod init tcbuild
             go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
+            # Diagnostic build: patch the tailcat module (internal log-file
+            # support, patches/tailcat-diag-logging.patch) and build from the
+            # patched copy instead of the pin. The Rust side always passes
+            # "log_file"; upstream's strict decoder would reject it.
+            rm -rf tailcat-diag
+            cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
+            chmod -R u+w tailcat-diag
+            ( cd tailcat-diag && git apply -p2 "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+            go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
             for spec in \
               "arm64-v8a arm64 aarch64-linux-android21" \
               "armeabi-v7a arm armv7a-linux-androideabi21" \
@@ -2221,6 +2259,15 @@ jobs:
           cd "$tc"
           go mod init tcbuild
           go get github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436
+          # Diagnostic build: patch the tailcat module (internal log-file
+          # support, patches/tailcat-diag-logging.patch) and build from the
+          # patched copy instead of the pin. The Rust side always passes
+          # "log_file"; upstream's strict decoder would reject it.
+          rm -rf tailcat-diag
+          cp -r "$(go env GOMODCACHE)/github.com/tailscale/tailcat@v0.7.1-0.20261119042437-c14b171db436" tailcat-diag
+          chmod -R u+w tailcat-diag
+          ( cd tailcat-diag && git apply -p2 "$GITHUB_WORKSPACE/patches/tailcat-diag-logging.patch" ) || { echo "::error::tailcat diag patch failed"; exit 1; }
+          go mod edit -replace github.com/tailscale/tailcat=./tailcat-diag
           CGO_ENABLED=1 go build -buildmode=c-shared -trimpath -ldflags="-s -w -buildid=" \
             -o "${GITHUB_WORKSPACE}/res/tailcat/libtailcat.so" github.com/tailscale/tailcat/cmd/libtailcat
 

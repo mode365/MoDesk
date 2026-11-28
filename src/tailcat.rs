@@ -137,11 +137,13 @@ impl DerpMapSource {
     /// Server-side config (tc_server_new). The inline region takes precedence
     /// (it also shortens the client path); otherwise pass the map URL.
     fn server_config(&self) -> serde_json::Value {
-        match self {
+        let mut v = match self {
             Self::Default => serde_json::json!({ "derp_map_url": DERPMAP_DEFAULT_URL }),
             Self::Url(u) => serde_json::json!({ "derp_map_url": u }),
             Self::Region(r) => serde_json::json!({ "region": serde_json::from_str::<serde_json::Value>(r).unwrap_or(serde_json::Value::Null) }),
-        }
+        };
+        attach_diag_log_file(&mut v);
+        v
     }
 
     /// Client-side config (tc_client_new). Inline regions ride inside the
@@ -152,13 +154,39 @@ impl DerpMapSource {
         // the server side only. Default is passed explicitly to keep library
         // versions without a built-in default working.
         let src = Self::from_config();
-        match src {
+        let mut v = match src {
             Self::Default => serde_json::json!({ "address": address, "derp_map_url": DERPMAP_DEFAULT_URL }),
             Self::Url(u) => serde_json::json!({ "address": address, "derp_map_url": u }),
             // Even in region mode the client could still resolve the peer
             // address without a map; pass the default URL for safety.
             Self::Region(_) => serde_json::json!({ "address": address, "derp_map_url": DERPMAP_DEFAULT_URL }),
-        }
+        };
+        attach_diag_log_file(&mut v);
+        v
+    }
+}
+
+/// Diagnostic log file handed to the tailcat library through the optional
+/// "log_file" config field. Honored only by our patched libtailcat builds
+/// (patches/tailcat-diag-logging.patch): upstream discards all internal
+/// logs, and its strict config decoder rejects unknown fields, so the Rust
+/// side and the bundled library must ship together. Written next to the
+/// app logs so it can be collected the same way. Always on for test builds
+/// -- gate behind an option before a stable release.
+fn diag_log_file() -> Option<String> {
+    static PATH: OnceLock<Option<String>> = OnceLock::new();
+    PATH.get_or_init(|| {
+        hbb_common::config::Config::log_path()
+            .join("tailcat-diag.log")
+            .to_str()
+            .map(|s| s.to_owned())
+    })
+    .clone()
+}
+
+fn attach_diag_log_file(v: &mut serde_json::Value) {
+    if let Some(p) = diag_log_file() {
+        v["log_file"] = serde_json::json!(p);
     }
 }
 
